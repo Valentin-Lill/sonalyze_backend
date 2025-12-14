@@ -4,10 +4,11 @@ from __future__ import annotations
 from typing import Any
 
 from fastapi import APIRouter, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ValidationError
 
 from sonalyze_simulation.schemas import SimulationRequest
 from sonalyze_simulation.simulate import run_simulation
+from sonalyze_simulation.payload_adapter import normalize_simulation_payload
 
 
 class GatewayClientInfo(BaseModel):
@@ -39,9 +40,10 @@ def _handle_simulation_run(
 ) -> dict[str, Any]:
     """Handle simulation.run event."""
     try:
-        request = SimulationRequest.model_validate(data)
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid simulation request: {e}")
+        normalized = normalize_simulation_payload(data)
+        request = SimulationRequest.model_validate(normalized)
+    except (ValidationError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=f"Invalid simulation request: {exc}") from exc
     
     result = run_simulation(request)
     return result.model_dump(mode="json")

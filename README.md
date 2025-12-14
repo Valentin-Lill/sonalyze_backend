@@ -329,6 +329,24 @@ python-json-logger==2.0.7
    docker compose down
    ```
 
+### Debugging With Fresh Containers
+
+Use the following chain when you need to blow away every image layer, rebuild, and stream all logs right in the foreground (no `-d`). It turns on unbuffered Python output and asks any service that respects `LOG_LEVEL` to switch to verbose logging:
+
+```bash
+docker compose down --remove-orphans && \
+DOCKER_BUILDKIT=1 docker compose build --no-cache && \
+PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --force-recreate --remove-orphans
+```
+
+To laser-focus on a single microservice while the rest keep running, leave the stack up in another terminal (for example via `docker compose up -d`) and rerun just the service you care about with rebuilt layers and live logs:
+
+```bash
+PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --build --force-recreate --no-deps simulation
+```
+
+Swap `simulation` for any other service name (gateway, measurement, storage, etc.) to tail that component in isolation while the rest of the system keeps serving traffic as usual.
+
 ### Running Individual Services
 
 Each service can be run independently for development:
