@@ -1,0 +1,23 @@
+services:
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: sonalyze
+    ports:
+      - "5432:5432"
+    volumes:
+      - lobby_postgres_data:/var/lib/postgresql/data
+
+  lobby:
+    build: .
+    environment:
+      DATABASE_URL: postgresql+asyncpg://postgres:postgres@postgres:5432/sonalyze
+    ports:
+      - "8001:8000"
+    depends_on:
+      - postgres
+
+volumes:
+  lobby_postgres_data:
