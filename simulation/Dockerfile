@@ -12,6 +12,7 @@ RUN apt-get update \
         pkg-config \
         libfftw3-dev \
         libopenblas-dev \
+        curl \
     && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.txt /app/requirements.txt

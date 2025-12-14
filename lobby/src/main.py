@@ -30,8 +30,12 @@ from service import (
     start_measurement,
 )
 from settings import settings
+from gateway_handler import router as gateway_router
 
 app = FastAPI(title="Sonalyze Lobby Service", version="0.1.0")
+
+# Include gateway handler for WebSocket event forwarding
+app.include_router(gateway_router)
 
 
 @app.on_event("startup")

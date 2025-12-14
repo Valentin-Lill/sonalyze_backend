@@ -1,0 +1,141 @@
+services:
+  # PostgreSQL database for storage service
+  postgres:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: sonalyze
+      POSTGRES_PASSWORD: sonalyze_secret
+      POSTGRES_DB: sonalyze
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sonalyze -d sonalyze"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # PostgreSQL database for lobby service (separate to avoid schema conflicts)
+  postgres-lobby:
+    image: postgres:16
+    environment:
+      POSTGRES_USER: lobby
+      POSTGRES_PASSWORD: lobby_secret
+      POSTGRES_DB: lobby
+    ports:
+      - "5433:5432"
+    volumes:
+      - postgres_lobby_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U lobby -d lobby"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  # Gateway service - entry point for clients (WebSocket + HTTP)
+  gateway:
+    build:
+      context: ./gateway
+      dockerfile: Dockerfile
+    ports:
+      - "8000:8000"
+    environment:
+      LOBBY_URL: http://lobby:8000
+      MEASUREMENT_URL: http://measurement:8000
+      SIMULATION_URL: http://simulation:8000
+      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
+      MAX_MESSAGE_BYTES: 65536
+      RATE_LIMIT_RPS: 10.0
+      RATE_LIMIT_BURST: 20
+      HTTP_TIMEOUT_SECONDS: 30.0
+    depends_on:
+      lobby:
+        condition: service_healthy
+      measurement:
+        condition: service_started
+      simulation:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Lobby service - manages lobbies and participants
+  lobby:
+    build:
+      context: ./lobby
+      dockerfile: Dockerfile
+    ports:
+      - "8001:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://lobby:lobby_secret@postgres-lobby:5432/lobby
+    depends_on:
+      postgres-lobby:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Measurement service - handles audio analysis jobs
+  measurement:
+    build:
+      context: ./measurement
+      dockerfile: Dockerfile
+    ports:
+      - "8002:8000"
+    environment:
+      MEASUREMENT_DATA_DIR: /data
+      MEASUREMENT_MAX_UPLOAD_MB: 50
+      HOST: 0.0.0.0
+      PORT: 8000
+    volumes:
+      - measurement_data:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Simulation service - room acoustics simulation
+  simulation:
+    build:
+      context: ./simulation
+      dockerfile: Dockerfile
+    ports:
+      - "8003:8000"
+    environment:
+      PORT: 8000
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  # Storage service - persistent data storage API
+  storage:
+    build:
+      context: ./storage
+      dockerfile: Dockerfile
+    ports:
+      - "8004:8000"
+    environment:
+      DATABASE_URL: postgresql+asyncpg://sonalyze:sonalyze_secret@postgres:5432/sonalyze
+      RUN_MIGRATIONS: "true"
+      LOG_LEVEL: INFO
+    depends_on:
+      postgres:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/healthz"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  postgres_data:
+  postgres_lobby_data:
+  measurement_data:
