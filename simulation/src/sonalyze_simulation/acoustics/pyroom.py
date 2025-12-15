@@ -10,7 +10,9 @@ from sonalyze_simulation.schemas import PolygonRoomSpec, RoomSpec, ShoeboxRoomSp
 def _pra_material(absorption: float, scattering: float):
     import pyroomacoustics as pra
 
-    return pra.Material(absorption=float(absorption), scattering=float(scattering))
+    # pyroomacoustics expects ``energy_absorption`` as the parameter name since
+    # v0.7.x, so forward the scalar coefficients accordingly.
+    return pra.Material(energy_absorption=float(absorption), scattering=float(scattering))
 
 
 def build_room(
@@ -65,15 +67,15 @@ def build_room(
             materials=wall_mat,
             air_absorption=air_absorption,
         )
-        room3d = room2d.extrude(
+        room2d.extrude(
             float(spec.height_m),
-            materials=(
-                _pra_material(spec.floor_material.absorption, spec.floor_material.scattering),
-                _pra_material(spec.ceiling_material.absorption, spec.ceiling_material.scattering),
-            ),
+            materials={
+                "floor": _pra_material(spec.floor_material.absorption, spec.floor_material.scattering),
+                "ceiling": _pra_material(spec.ceiling_material.absorption, spec.ceiling_material.scattering),
+            },
         )
 
-        return cast(pra.Room, room3d), warnings
+        return cast(pra.Room, room2d), warnings
 
     warnings.append("Unsupported room type")
     raise ValueError("Unsupported room spec")

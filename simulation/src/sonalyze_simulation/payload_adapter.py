@@ -38,6 +38,7 @@ class _RoomConversion:
     room_spec: dict[str, Any]
     bounds: _RoomBounds
     furniture: list[dict[str, Any]]
+    polygon: list[list[float]]
 
 
 def normalize_simulation_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -86,13 +87,13 @@ def normalize_simulation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     raw_sources = payload.get("sources") or room_model_data.get("sources")
     sources = _convert_emitters(raw_sources, prefix="src")
     if not sources:
-        sources = [_default_source(geometry.bounds)]
+        sources = [_default_source(geometry.bounds, geometry.polygon)]
     converted["sources"] = sources
 
     raw_microphones = payload.get("microphones") or room_model_data.get("microphones")
     microphones = _convert_emitters(raw_microphones, prefix="mic")
     if not microphones:
-        microphones = [_default_microphone(geometry.bounds)]
+        microphones = [_default_microphone(geometry.bounds, geometry.polygon)]
     converted["microphones"] = microphones
 
     return converted
@@ -165,7 +166,12 @@ def _convert_room_model(room_model: dict[str, Any]) -> _RoomConversion:
     }
 
     furniture = _convert_furniture_boxes(room.get("furniture"), room_height=height)
-    return _RoomConversion(room_spec=room_spec, bounds=bounds, furniture=furniture)
+    return _RoomConversion(
+        room_spec=room_spec,
+        bounds=bounds,
+        furniture=furniture,
+        polygon=polygon,
+    )
 
 
 def _collect_segments(walls: Any) -> list[tuple[list[float], list[float]]]:
@@ -321,22 +327,98 @@ def _coerce_position(value: Any) -> list[float] | None:
     return None
 
 
-def _default_source(bounds: _RoomBounds) -> dict[str, Any]:
+def _default_source(bounds: _RoomBounds, polygon: Sequence[Sequence[float]] | None = None) -> dict[str, Any]:
     span_x = bounds.width
     span_y = bounds.depth
     x = bounds.min_x + 0.25 * span_x
     y = bounds.min_y + 0.25 * span_y
+    x, y = _snap_point_inside_polygon((x, y), polygon, bounds)
     z = bounds.clamp_height(1.5)
     return {"id": "src-default", "position_m": [x, y, z]}
 
 
-def _default_microphone(bounds: _RoomBounds) -> dict[str, Any]:
+def _default_microphone(bounds: _RoomBounds, polygon: Sequence[Sequence[float]] | None = None) -> dict[str, Any]:
     span_x = bounds.width
     span_y = bounds.depth
     x = bounds.max_x - 0.25 * span_x
     y = bounds.max_y - 0.25 * span_y
+    x, y = _snap_point_inside_polygon((x, y), polygon, bounds)
     z = bounds.clamp_height(1.2)
     return {"id": "mic-default", "position_m": [x, y, z]}
+
+
+def _snap_point_inside_polygon(
+    candidate: tuple[float, float],
+    polygon: Sequence[Sequence[float]] | None,
+    bounds: _RoomBounds,
+) -> tuple[float, float]:
+    if polygon and _point_in_polygon(candidate, polygon):
+        return candidate
+
+    centroid = _polygon_centroid(polygon) if polygon else None
+    if centroid and polygon and _point_in_polygon(centroid, polygon):
+        dx = candidate[0] - centroid[0]
+        dy = candidate[1] - centroid[1]
+        if abs(dx) < 1e-6 and abs(dy) < 1e-6:
+            return centroid
+        for fraction in (1.0, 0.75, 0.5, 0.25, 0.1, 0.0):
+            test = (centroid[0] + dx * fraction, centroid[1] + dy * fraction)
+            if _point_in_polygon(test, polygon):
+                return test
+        return centroid
+
+    return (
+        _clamp_inside_bounds(candidate[0], bounds.min_x, bounds.max_x),
+        _clamp_inside_bounds(candidate[1], bounds.min_y, bounds.max_y),
+    )
+
+
+def _clamp_inside_bounds(value: float, minimum: float, maximum: float) -> float:
+    if maximum <= minimum:
+        return minimum
+    span = maximum - minimum
+    margin = max(span * 0.01, 0.01)
+    lower = minimum + margin
+    upper = maximum - margin
+    if lower >= upper:
+        return (minimum + maximum) / 2.0
+    return min(max(value, lower), upper)
+
+
+def _polygon_centroid(polygon: Sequence[Sequence[float]] | None) -> tuple[float, float] | None:
+    if not polygon:
+        return None
+    area_acc = 0.0
+    cx_acc = 0.0
+    cy_acc = 0.0
+    n = len(polygon)
+    for idx in range(n):
+        x0, y0 = polygon[idx]
+        x1, y1 = polygon[(idx + 1) % n]
+        cross = x0 * y1 - x1 * y0
+        area_acc += cross
+        cx_acc += (x0 + x1) * cross
+        cy_acc += (y0 + y1) * cross
+    area = area_acc * 0.5
+    if abs(area) < 1e-9:
+        sum_x = sum(pt[0] for pt in polygon)
+        sum_y = sum(pt[1] for pt in polygon)
+        return (sum_x / len(polygon), sum_y / len(polygon))
+    return (cx_acc / (6.0 * area), cy_acc / (6.0 * area))
+
+
+def _point_in_polygon(point: tuple[float, float], polygon: Sequence[Sequence[float]]) -> bool:
+    x, y = point
+    inside = False
+    n = len(polygon)
+    for idx in range(n):
+        x0, y0 = polygon[idx]
+        x1, y1 = polygon[(idx + 1) % n]
+        if ((y0 > y) != (y1 > y)) and (y1 - y0) != 0:
+            intersection_x = (x1 - x0) * (y - y0) / (y1 - y0) + x0
+            if x < intersection_x:
+                inside = not inside
+    return inside
 
 
 def _three_point2d(value: Any) -> list[float] | None:
