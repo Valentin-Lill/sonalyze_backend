@@ -6,6 +6,8 @@ class Settings(BaseSettings):
 
     service_name: str = "lobby"
     database_url: str = "sqlite+aiosqlite:///./lobby.db"
+    gateway_url: str = "http://localhost:8000"
+    internal_auth_token: str = ""
 
 
 settings = Settings()

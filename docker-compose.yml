@@ -71,6 +71,8 @@ services:
       - "8001:8000"
     environment:
       DATABASE_URL: postgresql+asyncpg://lobby:lobby_secret@postgres-lobby:5432/lobby
+      GATEWAY_URL: http://gateway:8000
+      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
     depends_on:
       postgres-lobby:
         condition: service_healthy

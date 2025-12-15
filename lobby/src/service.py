@@ -7,6 +7,7 @@ from datetime import datetime
 from sqlalchemy import Select, select
 from sqlalchemy.ext.asyncio import AsyncSession
 
+from broadcast import broadcast_to_devices
 from models import Lobby, LobbyEvent, LobbyState, Participant, ParticipantRole, ParticipantStatus
 
 
@@ -65,6 +66,14 @@ async def list_participants(session: AsyncSession, lobby_id: str) -> list[Partic
     return list(result.scalars().all())
 
 
+async def _broadcast_lobby_update(session: AsyncSession, lobby_id: str, event: str, data: dict) -> None:
+    participants = await list_participants(session, lobby_id)
+    # Filter only currently joined participants
+    device_ids = [p.device_id for p in participants if p.status == ParticipantStatus.JOINED]
+    if device_ids:
+        await broadcast_to_devices(device_ids, event, data)
+
+
 async def join_lobby(session: AsyncSession, *, lobby: Lobby, device_id: str) -> Participant:
     if lobby.state != LobbyState.OPEN:
         raise ValueError("Lobby is not open")
@@ -88,6 +97,19 @@ async def join_lobby(session: AsyncSession, *, lobby: Lobby, device_id: str) -> 
         participant.left_at = None
 
     await _append_event(session, lobby.id, "participant_joined", {"device_id": device_id})
+    
+    # Broadcast update to all participants
+    await _broadcast_lobby_update(
+        session, 
+        lobby.id, 
+        "lobby.updated", 
+        {
+            "type": "participant_joined",
+            "device_id": device_id,
+            "lobby_id": lobby.id
+        }
+    )
+    
     return participant
 
 
@@ -101,6 +123,18 @@ async def leave_lobby(session: AsyncSession, *, lobby: Lobby, device_id: str) ->
     participant.status = ParticipantStatus.LEFT
     participant.left_at = datetime.utcnow()
     await _append_event(session, lobby.id, "participant_left", {"device_id": device_id})
+
+    # Broadcast update to all participants
+    await _broadcast_lobby_update(
+        session, 
+        lobby.id, 
+        "lobby.updated", 
+        {
+            "type": "participant_left",
+            "device_id": device_id,
+            "lobby_id": lobby.id
+        }
+    )
 
 
 def _require_admin(lobby: Lobby, admin_device_id: str) -> None:
@@ -130,6 +164,19 @@ async def assign_role(
         lobby.id,
         "role_assigned",
         {"admin_device_id": admin_device_id, "target_device_id": target_device_id, "role": role.value},
+    )
+
+    # Broadcast update to all participants
+    await _broadcast_lobby_update(
+        session, 
+        lobby.id, 
+        "lobby.updated", 
+        {
+            "type": "role_assigned",
+            "target_device_id": target_device_id,
+            "role": role.value,
+            "lobby_id": lobby.id
+        }
     )
 
 
