@@ -149,6 +149,8 @@ async def assign_role(
     admin_device_id: str,
     target_device_id: str,
     role: ParticipantRole,
+    role_slot_id: str | None = None,
+    role_slot_label: str | None = None,
 ) -> None:
     _require_admin(lobby, admin_device_id)
 
@@ -159,24 +161,38 @@ async def assign_role(
         raise LookupError("Target participant not found (or not joined)")
 
     participant.role = role
+    if role == ParticipantRole.NONE:
+        participant.role_slot_id = None
+        participant.role_slot_label = None
+    else:
+        participant.role_slot_id = role_slot_id
+        participant.role_slot_label = role_slot_label
     await _append_event(
         session,
         lobby.id,
         "role_assigned",
-        {"admin_device_id": admin_device_id, "target_device_id": target_device_id, "role": role.value},
+        {
+            "admin_device_id": admin_device_id,
+            "target_device_id": target_device_id,
+            "role": role.value,
+            "role_slot_id": participant.role_slot_id,
+            "role_slot_label": participant.role_slot_label,
+        },
     )
 
     # Broadcast update to all participants
     await _broadcast_lobby_update(
-        session, 
-        lobby.id, 
-        "lobby.updated", 
+        session,
+        lobby.id,
+        "lobby.updated",
         {
             "type": "role_assigned",
             "target_device_id": target_device_id,
             "role": role.value,
-            "lobby_id": lobby.id
-        }
+            "lobby_id": lobby.id,
+            "role_slot_id": participant.role_slot_id,
+            "role_slot_label": participant.role_slot_label,
+        },
     )
 
 

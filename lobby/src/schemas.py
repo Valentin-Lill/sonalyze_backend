@@ -37,6 +37,8 @@ class AssignRoleRequest(BaseModel):
     admin_device_id: str = Field(min_length=1, max_length=128)
     target_device_id: str = Field(min_length=1, max_length=128)
     role: ParticipantRole
+    role_slot_id: str | None = Field(default=None, max_length=64)
+    role_slot_label: str | None = Field(default=None, max_length=128)
 
 
 class StartMeasurementRequest(BaseModel):
@@ -46,6 +48,8 @@ class StartMeasurementRequest(BaseModel):
 class ParticipantOut(BaseModel):
     device_id: str
     role: ParticipantRole
+    role_slot_id: str | None = None
+    role_slot_label: str | None = None
     status: ParticipantStatus
     joined_at: datetime
     left_at: datetime | None

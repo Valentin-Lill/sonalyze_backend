@@ -88,6 +88,8 @@ async def join(req: LobbyJoinRequest, session: AsyncSession = Depends(get_sessio
                 ParticipantOut(
                     device_id=p.device_id,
                     role=p.role,
+                    role_slot_id=p.role_slot_id,
+                    role_slot_label=p.role_slot_label,
                     status=p.status,
                     joined_at=p.joined_at,
                     left_at=p.left_at,
@@ -127,6 +129,8 @@ async def get_lobby(lobby_id: str, session: AsyncSession = Depends(get_session))
             ParticipantOut(
                 device_id=p.device_id,
                 role=p.role,
+                role_slot_id=p.role_slot_id,
+                role_slot_label=p.role_slot_label,
                 status=p.status,
                 joined_at=p.joined_at,
                 left_at=p.left_at,
@@ -149,6 +153,8 @@ async def roles(lobby_id: str, req: AssignRoleRequest, session: AsyncSession = D
             admin_device_id=req.admin_device_id,
             target_device_id=req.target_device_id,
             role=req.role,
+            role_slot_id=req.role_slot_id,
+            role_slot_label=req.role_slot_label,
         )
         await session.commit()
         return {"ok": True}

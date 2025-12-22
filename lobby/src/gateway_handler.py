@@ -88,6 +88,8 @@ async def _handle_lobby_join(
             ParticipantOut(
                 device_id=p.device_id,
                 role=p.role,
+                role_slot_id=p.role_slot_id,
+                role_slot_label=p.role_slot_label,
                 status=p.status,
                 joined_at=p.joined_at,
                 left_at=p.left_at,
@@ -145,6 +147,8 @@ async def _handle_lobby_get(
             ParticipantOut(
                 device_id=p.device_id,
                 role=p.role,
+                role_slot_id=p.role_slot_id,
+                role_slot_label=p.role_slot_label,
                 status=p.status,
                 joined_at=p.joined_at,
                 left_at=p.left_at,
@@ -163,6 +167,8 @@ async def _handle_role_assign(
     lobby_id = data.get("lobby_id")
     target_device_id = data.get("target_device_id")
     role_str = data.get("role")
+    role_slot_id = data.get("role_slot_id")
+    role_slot_label = data.get("role_slot_label")
     
     if not lobby_id or not target_device_id or not role_str:
         raise HTTPException(
@@ -186,6 +192,8 @@ async def _handle_role_assign(
             admin_device_id=client.device_id,
             target_device_id=target_device_id,
             role=role,
+            role_slot_id=role_slot_id,
+            role_slot_label=role_slot_label,
         )
         await session.commit()
         return {"ok": True}

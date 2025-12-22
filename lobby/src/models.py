@@ -47,6 +47,8 @@ class Participant(Base):
     lobby_id: Mapped[str] = mapped_column(String(36), ForeignKey("lobbies.id", ondelete="CASCADE"), index=True)
     device_id: Mapped[str] = mapped_column(String(128), index=True)
     role: Mapped[ParticipantRole] = mapped_column(Enum(ParticipantRole), default=ParticipantRole.NONE)
+    role_slot_id: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    role_slot_label: Mapped[str | None] = mapped_column(String(128), nullable=True)
     status: Mapped[ParticipantStatus] = mapped_column(Enum(ParticipantStatus), default=ParticipantStatus.JOINED)
     joined_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=datetime.utcnow)
     left_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
