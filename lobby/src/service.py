@@ -74,6 +74,23 @@ async def _broadcast_lobby_update(session: AsyncSession, lobby_id: str, event: s
         await broadcast_to_devices(device_ids, event, data)
 
 
+async def _broadcast_room_snapshot(
+    session: AsyncSession,
+    lobby_id: str,
+    data: dict,
+    *,
+    exclude_device_id: str | None = None,
+) -> None:
+    participants = await list_participants(session, lobby_id)
+    device_ids = [
+        p.device_id
+        for p in participants
+        if p.status == ParticipantStatus.JOINED and p.device_id != exclude_device_id
+    ]
+    if device_ids:
+        await broadcast_to_devices(device_ids, "lobby.room_snapshot", data)
+
+
 async def join_lobby(session: AsyncSession, *, lobby: Lobby, device_id: str) -> Participant:
     if lobby.state != LobbyState.OPEN:
         raise ValueError("Lobby is not open")
@@ -204,6 +221,39 @@ async def start_measurement(session: AsyncSession, *, lobby: Lobby, admin_device
 
     lobby.state = LobbyState.MEASUREMENT_RUNNING
     await _append_event(session, lobby.id, "measurement_started", {"admin_device_id": admin_device_id})
+
+
+async def share_room_snapshot(
+    session: AsyncSession,
+    *,
+    lobby: Lobby,
+    admin_device_id: str,
+    room: dict,
+) -> None:
+    _require_admin(lobby, admin_device_id)
+    if not isinstance(room, dict):
+        raise ValueError("room payload must be an object")
+
+    await _append_event(
+        session,
+        lobby.id,
+        "room_snapshot",
+        {"admin_device_id": admin_device_id},
+    )
+
+    payload = {
+        "lobby_id": lobby.id,
+        "room": room,
+        "source_device_id": admin_device_id,
+        "shared_at": datetime.utcnow().isoformat(),
+    }
+
+    await _broadcast_room_snapshot(
+        session,
+        lobby.id,
+        payload,
+        exclude_device_id=admin_device_id,
+    )
 
 
 async def get_events(session: AsyncSession, *, lobby_id: str, after_id: int | None) -> list[LobbyEvent]:

@@ -17,6 +17,7 @@ from service import (
     join_lobby,
     leave_lobby,
     list_participants,
+    share_room_snapshot,
     start_measurement,
 )
 from schemas import ParticipantOut
@@ -227,6 +228,40 @@ async def _handle_lobby_start(
         raise HTTPException(status_code=409, detail=str(e))
 
 
+async def _handle_lobby_room_snapshot(
+    client: GatewayClientInfo,
+    data: dict[str, Any],
+    session: AsyncSession,
+) -> dict[str, Any]:
+    lobby_id = data.get("lobby_id")
+    room = data.get("room")
+    if not lobby_id:
+        raise HTTPException(status_code=400, detail="Missing 'lobby_id' in data")
+    if room is None:
+        raise HTTPException(status_code=400, detail="Missing 'room' in data")
+
+    lobby = await get_lobby_by_id(session, lobby_id)
+    if lobby is None:
+        raise HTTPException(status_code=404, detail="Lobby not found")
+
+    if not isinstance(room, dict):
+        raise HTTPException(status_code=400, detail="'room' must be an object")
+
+    try:
+        await share_room_snapshot(
+            session,
+            lobby=lobby,
+            admin_device_id=client.device_id,
+            room=room,
+        )
+        await session.commit()
+        return {"ok": True}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 # Event handlers mapping
 EVENT_HANDLERS = {
     "lobby.create": _handle_lobby_create,
@@ -235,6 +270,7 @@ EVENT_HANDLERS = {
     "lobby.get": _handle_lobby_get,
     "lobby.start": _handle_lobby_start,
     "role.assign": _handle_role_assign,
+    "lobby.room_snapshot": _handle_lobby_room_snapshot,
 }
 
 
