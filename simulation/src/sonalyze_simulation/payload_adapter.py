@@ -84,13 +84,21 @@ def normalize_simulation_payload(payload: dict[str, Any]) -> dict[str, Any]:
         ),
     }
 
-    raw_sources = payload.get("sources") or room_model_data.get("sources")
+    raw_sources = _extract_emitters_from_payload(
+        payload,
+        room_model_data,
+        keys=("sources", "loudspeakers", "speakers"),
+    )
     sources = _convert_emitters(raw_sources, prefix="src")
     if not sources:
         sources = [_default_source(geometry.bounds, geometry.polygon)]
     converted["sources"] = sources
 
-    raw_microphones = payload.get("microphones") or room_model_data.get("microphones")
+    raw_microphones = _extract_emitters_from_payload(
+        payload,
+        room_model_data,
+        keys=("microphones", "mics", "receivers", "microphone"),
+    )
     microphones = _convert_emitters(raw_microphones, prefix="mic")
     if not microphones:
         microphones = [_default_microphone(geometry.bounds, geometry.polygon)]
@@ -273,6 +281,57 @@ def _convert_furniture_boxes(items: Any, *, room_height: float) -> list[dict[str
             }
         )
     return boxes
+
+
+def _extract_emitters_from_payload(
+    payload: Any,
+    room_model: dict[str, Any],
+    *,
+    keys: tuple[str, ...],
+) -> list[Any]:
+    for container in (payload, room_model):
+        entries = _collect_emitter_entries(container, keys)
+        if entries:
+            return entries
+        entries = _collect_emitter_entries(_nested_devices(container), keys)
+        if entries:
+            return entries
+
+    rooms = room_model.get("rooms")
+    aggregated: list[Any] = []
+    if isinstance(rooms, list):
+        for room in rooms:
+            if not isinstance(room, dict):
+                continue
+            aggregated.extend(_collect_emitter_entries(room, keys))
+            aggregated.extend(_collect_emitter_entries(_nested_devices(room), keys))
+    return aggregated
+
+
+def _nested_devices(container: Any) -> Any:
+    if isinstance(container, dict):
+        return container.get("devices")
+    return None
+
+
+def _collect_emitter_entries(container: Any, keys: tuple[str, ...]) -> list[Any]:
+    if not isinstance(container, dict):
+        return []
+    collected: list[Any] = []
+    for key in keys:
+        if key not in container:
+            continue
+        value = container.get(key)
+        if value is None:
+            continue
+        if isinstance(value, list):
+            collected.extend(value)
+            continue
+        if isinstance(value, tuple):
+            collected.extend(list(value))
+            continue
+        collected.append(value)
+    return collected
 
 
 def _convert_emitters(raw: Any, *, prefix: str) -> list[dict[str, Any]]:

@@ -65,6 +65,55 @@ class NormalizeSimulationPayloadTests(unittest.TestCase):
         self.assertTrue(normalized["sources"][0]["position_m"][2] > 0)
         self.assertTrue(normalized["microphones"][0]["position_m"][2] > 0)
 
+    def test_payload_level_loudspeaker_aliases_are_forwarded(self):
+        room_model = {
+            "version": "1.0",
+            "rooms": [
+                {
+                    "dimensions": {"width": 6.0, "height": 2.7, "depth": 4.0},
+                }
+            ],
+        }
+
+        request = {
+            "room_model": room_model,
+            "loudspeakers": [
+                {"id": "speaker-a", "position_m": [1.0, 0.0, 1.4]},
+                {"id": "speaker-b", "position_m": [0.5, 0.5, 1.4]},
+            ],
+            "mics": [
+                {"id": "mic-a", "position_m": [-1.0, 0.0, 1.2]},
+            ],
+        }
+
+        normalized = normalize_simulation_payload(request)
+
+        self.assertEqual([src["id"] for src in normalized["sources"]], ["speaker-a", "speaker-b"])
+        self.assertEqual([mic["id"] for mic in normalized["microphones"]], ["mic-a"])
+
+    def test_room_model_devices_section_is_used(self):
+        room_model = {
+            "version": "1.0",
+            "rooms": [
+                {
+                    "dimensions": {"width": 5.0, "height": 2.5, "depth": 4.0},
+                    "devices": {
+                        "loudspeakers": [
+                            {"id": "ls-room", "position_m": [0.0, -1.0, 1.4]},
+                        ],
+                        "microphones": [
+                            {"id": "mic-room", "position_m": [1.0, 0.5, 1.2]},
+                        ],
+                    },
+                }
+            ],
+        }
+
+        normalized = normalize_simulation_payload({"room_model": room_model})
+
+        self.assertEqual([src["id"] for src in normalized["sources"]], ["ls-room"])
+        self.assertEqual([mic["id"] for mic in normalized["microphones"]], ["mic-room"])
+
 
 if __name__ == "__main__":
     unittest.main()
