@@ -4,8 +4,14 @@ import pathlib
 import re
 import uuid
 
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi.responses import Response
 
+from app.analysis.audio_generator import (
+    MeasurementSignalConfig,
+    generate_measurement_audio_bytes,
+    get_signal_timing,
+)
 from app.analysis.io import normalize_peak, read_audio_mono
 from app.analysis.metrics import (
     clarity_definition_metrics,
@@ -127,3 +133,70 @@ def analyze(job_id: str, req: AnalyzeRequest) -> AnalyzeResponse:
     store.write_json(job_dir / "results" / "analysis.json", results)
 
     return AnalyzeResponse(job_id=job_id, results=results)
+
+
+# =============================================================================
+# Measurement Audio Endpoints
+# =============================================================================
+
+@router.get("/measurement/audio")
+def get_measurement_audio(
+    session_id: str | None = Query(default=None, description="Session ID for tracking"),
+    sample_rate: int = Query(default=48000, ge=8000, le=192000, description="Sample rate in Hz"),
+    format: str = Query(default="wav", description="Audio format: wav or flac"),
+) -> Response:
+    """
+    Get the measurement audio file.
+    
+    Returns a WAV or FLAC file containing the measurement signal:
+    - 0.0s - 0.5s: Sync Chirp (2kHz - 10kHz)
+    - 0.5s - 2.5s: Silence
+    - 2.5s - 12.5s: Measurement Sweep (20Hz - 20kHz)
+    - 12.5s - 14.5s: Silence (reverb tail)
+    - 14.5s - 15.0s: Sync Chirp
+    """
+    config = MeasurementSignalConfig(sample_rate=sample_rate)
+    
+    if format.lower() == "flac":
+        audio_format = "FLAC"
+        media_type = "audio/flac"
+        extension = "flac"
+    else:
+        audio_format = "WAV"
+        media_type = "audio/wav"
+        extension = "wav"
+    
+    audio_bytes = generate_measurement_audio_bytes(
+        config=config,
+        format=audio_format,
+        subtype="PCM_16",
+    )
+    
+    filename = f"measurement_signal.{extension}"
+    if session_id:
+        filename = f"measurement_{session_id}.{extension}"
+    
+    return Response(
+        content=audio_bytes,
+        media_type=media_type,
+        headers={
+            "Content-Disposition": f'attachment; filename="{filename}"',
+            "X-Duration-Seconds": str(config.total_duration),
+            "X-Sample-Rate": str(config.sample_rate),
+        },
+    )
+
+
+@router.get("/measurement/audio/info")
+def get_measurement_audio_info(
+    sample_rate: int = Query(default=48000, ge=8000, le=192000, description="Sample rate in Hz"),
+) -> dict:
+    """
+    Get timing information about the measurement signal.
+    
+    Returns the structure and timing of each segment in the measurement audio.
+    Useful for clients to know when to start/stop recording and where the
+    sync chirps are located.
+    """
+    config = MeasurementSignalConfig(sample_rate=sample_rate)
+    return get_signal_timing(config)

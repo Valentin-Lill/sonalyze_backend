@@ -33,13 +33,22 @@ class EventRouter:
         url = f"{service_url}/gateway/handle"
         req = GatewayForwardRequest(client=client, message=message)
 
+        print(f"[router] Forwarding event '{message.event}' to {url}")
+        print(f"[router] Request payload: {req.model_dump()}")
+
         try:
             status, body = await self._http.post_json(url, req.model_dump())
         except httpx.TimeoutException as exc:
+            print(f"[router] Upstream timeout for {url}")
             raise RuntimeError("Upstream timeout") from exc
         except httpx.RequestError as exc:
+            print(f"[router] Upstream unreachable for {url}: {exc}")
             raise RuntimeError("Upstream unreachable") from exc
 
+        print(f"[router] Response status={status}, body={body}")
+
         if status >= 400:
-            raise RuntimeError(f"Upstream error ({status})")
+            error_detail = body.get("detail", str(body)) if isinstance(body, dict) else str(body)
+            print(f"[router] Upstream error ({status}): {error_detail}")
+            raise RuntimeError(f"Upstream error ({status}): {error_detail}")
         return body

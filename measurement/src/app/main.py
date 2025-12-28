@@ -4,11 +4,22 @@ import os
 
 import uvicorn
 from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from app.api.routes import router
 from app.gateway_handler import router as gateway_router
 
 app = FastAPI(title="sonalyze-measurement", version="0.1.0")
+
+# Add CORS middleware for browser clients to fetch audio files
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Allow all origins for development
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
 app.include_router(router)
 
 # Include gateway handler for WebSocket event forwarding

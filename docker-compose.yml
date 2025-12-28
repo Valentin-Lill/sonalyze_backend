@@ -92,6 +92,8 @@ services:
     environment:
       MEASUREMENT_DATA_DIR: /data
       MEASUREMENT_MAX_UPLOAD_MB: 50
+      GATEWAY_URL: http://gateway:8000
+      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
       HOST: 0.0.0.0
       PORT: 8000
     volumes:
