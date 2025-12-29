@@ -176,6 +176,17 @@ def get_measurement_audio(
     if session_id:
         filename = f"measurement_{session_id}.{extension}"
     
+    # Save generated audio to disk for debugging
+    try:
+        debug_dir = pathlib.Path(settings.debug_dir)
+        debug_dir.mkdir(parents=True, exist_ok=True)
+        debug_file = debug_dir / filename
+        with open(debug_file, "wb") as f:
+            f.write(audio_bytes)
+        print(f"Saved debug audio to {debug_file}")
+    except Exception as e:
+        print(f"Failed to save debug audio: {e}")
+    
     return Response(
         content=audio_bytes,
         media_type=media_type,

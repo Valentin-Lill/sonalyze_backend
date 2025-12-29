@@ -9,6 +9,7 @@ class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="MEASUREMENT_", case_sensitive=False)
 
     data_dir: str = "/data"
+    debug_dir: str = "debug_audio"
     max_upload_mb: int = 50
     
     # Gateway configuration for broadcasting events
