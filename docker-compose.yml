@@ -97,7 +97,7 @@ services:
       HOST: 0.0.0.0
       PORT: 8000
     volumes:
-      - measurement_data:/data
+      - ./measurement_data:/data  # Host-mounted so you can access recordings
       - ./measurement/debug_audio:/app/debug_audio
     healthcheck:
       test: ["CMD", "curl", "-f", "http://localhost:8000/v1/health"]
@@ -143,4 +143,4 @@ services:
 volumes:
   postgres_data:
   postgres_lobby_data:
-  measurement_data:
+  # measurement_data volume removed - now using host-mounted directory
