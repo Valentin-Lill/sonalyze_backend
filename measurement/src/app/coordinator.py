@@ -1,14 +1,19 @@
 """
 Measurement Coordinator Module.
 
-Coordinates the synchronized measurement process between speakers and microphones:
-1. Prepare all clients (speaker + microphones) for measurement
-2. Wait for all clients to signal ready
-3. Signal speaker to start playback
-4. Wait for speaker to finish
-5. Signal microphones to stop recording and upload
-6. Collect and process recordings
-7. Repeat for each speaker
+Implements the 11-step synchronized measurement protocol:
+
+1. Lobby creator tells backend measurements should start
+2. Server tells all clients that measurement will start now
+3. All clients send a ready signal
+4. Speaker requests the audiofile + hash
+5. Backend sends speaker audiofile (.wav) with hash for verification
+6. Speaker tells backend it received working audiofile, ready to start
+7. Backend tells all microphones to start recording now
+8. Microphones start recording and confirm to backend
+9. Backend tells loudspeaker to start playing audiofile
+10. Speaker plays, when finished tells backend
+11. Backend tells microphones to stop, they send recordings to backend
 
 This module maintains the state machine for measurement sessions.
 """
@@ -19,23 +24,46 @@ import enum
 import uuid
 from dataclasses import dataclass, field
 from datetime import datetime
-from typing import Any, Callable, Awaitable
+from typing import Any
 
 import httpx
 
+from app.measurement_logger import get_measurement_logger
 from app.settings import settings
+
+# Initialize logger
+log = get_measurement_logger()
 
 
 class MeasurementPhase(str, enum.Enum):
-    """Phases of a measurement cycle for a single speaker."""
+    """Phases of a measurement cycle following the 11-step protocol."""
     IDLE = "idle"
-    PREPARING = "preparing"  # Notifying clients to prepare
-    WAITING_READY = "waiting_ready"  # Waiting for all clients to be ready
-    PLAYING = "playing"  # Speaker is playing the measurement signal
-    RECORDING_COMPLETE = "recording_complete"  # Waiting for recordings to be uploaded
-    PROCESSING = "processing"  # Processing the recordings
-    COMPLETED = "completed"  # Measurement cycle complete
-    FAILED = "failed"  # Measurement failed
+    # Step 1: Creator initiated start
+    INITIATING = "initiating"
+    # Step 2: Server notifying clients
+    NOTIFYING_CLIENTS = "notifying_clients"
+    # Step 3: Waiting for ready signals
+    WAITING_READY = "waiting_ready"
+    # Step 4-5: Speaker requesting/receiving audio
+    SPEAKER_DOWNLOADING = "speaker_downloading"
+    # Step 6: Speaker confirmed audio ready
+    SPEAKER_READY = "speaker_ready"
+    # Step 7: Commanding microphones to start recording
+    STARTING_RECORDING = "starting_recording"
+    # Step 8: Microphones recording
+    RECORDING = "recording"
+    # Step 9: Speaker playing
+    PLAYING = "playing"
+    # Step 10: Playback complete, stopping recording
+    PLAYBACK_COMPLETE = "playback_complete"
+    # Step 11: Uploading recordings
+    UPLOADING = "uploading"
+    # Processing
+    PROCESSING = "processing"
+    # Complete
+    COMPLETED = "completed"
+    # Error
+    FAILED = "failed"
 
 
 class ClientRole(str, enum.Enum):
@@ -54,6 +82,8 @@ class MeasurementClient:
     is_ready: bool = False
     is_finished: bool = False
     recording_uploaded: bool = False
+    recording_started: bool = False  # New: tracking recording start confirmation
+    audio_received: bool = False  # New: for speaker audio download confirmation
     error: str | None = None
 
 
@@ -66,13 +96,19 @@ class SpeakerMeasurement:
     started_at: datetime | None = None
     finished_at: datetime | None = None
     audio_file_id: str | None = None
+    audio_hash: str | None = None  # New: hash for audio verification
     error: str | None = None
-    
+
     @property
     def all_ready(self) -> bool:
         """Check if speaker and all microphones are ready."""
         return self.speaker.is_ready and all(m.is_ready for m in self.microphones)
-    
+
+    @property
+    def all_recordings_started(self) -> bool:
+        """Check if all microphones have started recording."""
+        return all(m.recording_started for m in self.microphones)
+
     @property
     def all_recordings_uploaded(self) -> bool:
         """Check if all microphones have uploaded their recordings."""
@@ -108,12 +144,17 @@ async def broadcast_to_devices(
     device_ids: list[str],
     event: str,
     data: dict[str, Any],
+    session_id: str | None = None,
 ) -> None:
     """Broadcast an event to specific devices via the gateway."""
     if not device_ids:
-        print(f"[coordinator] broadcast_to_devices: No device IDs provided for event {event}")
+        log.warning(
+            f"broadcast_to_devices: No device IDs provided for event {event}",
+            component="broadcast",
+            session_id=session_id,
+        )
         return
-    
+
     url = f"{settings.gateway_url}/internal/broadcast"
     headers = {"X-Internal-Token": settings.internal_auth_token}
     payload = {
@@ -121,17 +162,25 @@ async def broadcast_to_devices(
         "data": data,
         "targets": {"device_ids": device_ids},
     }
-    
-    print(f"[coordinator] Broadcasting event '{event}' to devices: {device_ids}")
-    print(f"[coordinator] Broadcast URL: {url}")
-    print(f"[coordinator] Broadcast payload: {payload}")
-    
+
+    log.log_broadcast(event, device_ids, session_id=session_id, data=data)
+
     async with httpx.AsyncClient() as client:
         try:
             response = await client.post(url, json=payload, headers=headers, timeout=5.0)
-            print(f"[coordinator] Broadcast response: status={response.status_code}, body={response.text}")
+            log.debug(
+                f"Broadcast response: status={response.status_code}",
+                component="broadcast",
+                session_id=session_id,
+                data={"event": event, "status": response.status_code},
+            )
         except Exception as e:
-            print(f"[coordinator] Failed to broadcast {event}: {e}")
+            log.error(
+                f"Failed to broadcast {event}: {e}",
+                component="broadcast",
+                session_id=session_id,
+                exc_info=True,
+            )
 
 
 async def create_session(
@@ -153,6 +202,18 @@ async def create_session(
         Created MeasurementSession
     """
     session_id = str(uuid.uuid4())
+    
+    log.info(
+        f"Creating measurement session",
+        component="coordinator",
+        session_id=session_id,
+        data={
+            "job_id": job_id,
+            "lobby_id": lobby_id,
+            "speaker_count": len(speakers),
+            "microphone_count": len(microphones),
+        },
+    )
     
     speaker_clients = [
         MeasurementClient(
@@ -185,6 +246,12 @@ async def create_session(
     async with _sessions_lock:
         _sessions[session_id] = session
     
+    log.log_step(
+        1, "Session Created",
+        session_id=session_id,
+        data={"speakers": [s.slot_id for s in speaker_clients], "microphones": [m.slot_id for m in microphone_clients]},
+    )
+    
     return session
 
 
@@ -194,11 +261,12 @@ async def get_session(session_id: str) -> MeasurementSession | None:
         return _sessions.get(session_id)
 
 
-async def start_next_speaker_measurement(session_id: str) -> dict[str, Any]:
+async def start_measurement(session_id: str) -> dict[str, Any]:
     """
-    Start measurement for the next speaker in the session.
+    Step 2: Start measurement - Notify all clients.
     
-    This initiates the prepare phase, notifying all clients to get ready.
+    Backend sends "measurement.start_measurement" to all speakers and microphones
+    with the session ID. Clients should prepare for measurement.
     
     Returns:
         Status dict with session state
@@ -208,8 +276,8 @@ async def start_next_speaker_measurement(session_id: str) -> dict[str, Any]:
         raise ValueError(f"Session not found: {session_id}")
     
     if session.current_speaker_index >= len(session.speakers):
-        # All speakers measured
         session.status = "completed"
+        log.info("All speakers measured", component="coordinator", session_id=session_id)
         return {
             "session_id": session_id,
             "status": "completed",
@@ -218,61 +286,56 @@ async def start_next_speaker_measurement(session_id: str) -> dict[str, Any]:
     
     speaker = session.speakers[session.current_speaker_index]
     
-    # Reset ready states for microphones
+    # Reset states for all clients
     for mic in session.microphones:
         mic.is_ready = False
         mic.is_finished = False
         mic.recording_uploaded = False
+        mic.recording_started = False
         mic.error = None
     
     speaker.is_ready = False
     speaker.is_finished = False
+    speaker.audio_received = False
     speaker.error = None
     
     # Create the measurement state
     measurement = SpeakerMeasurement(
         speaker=speaker,
         microphones=session.microphones.copy(),
-        phase=MeasurementPhase.PREPARING,
+        phase=MeasurementPhase.INITIATING,
         started_at=datetime.utcnow(),
     )
     session.current_measurement = measurement
     session.status = "running"
     
-    # Generate audio file ID for this measurement
-    measurement.audio_file_id = f"measurement_{session_id}_{speaker.slot_id}"
+    log.log_step(
+        2, "Starting Measurement - Notifying Clients",
+        session_id=session_id,
+        data={"speaker_slot_id": speaker.slot_id, "microphone_count": len(session.microphones)},
+    )
     
-    # Notify all microphones to prepare for recording
-    mic_device_ids = [m.device_id for m in session.microphones]
+    # Step 2: Notify ALL clients (speakers + microphones) that measurement is starting
+    all_device_ids = [s.device_id for s in session.speakers] + [m.device_id for m in session.microphones]
     await broadcast_to_devices(
-        mic_device_ids,
-        "measurement.prepare_recording",
+        all_device_ids,
+        "measurement.start_measurement",
         {
             "session_id": session_id,
             "job_id": session.job_id,
-            "speaker_slot_id": speaker.slot_id,
-            "speaker_slot_label": speaker.slot_label,
-            "expected_duration_seconds": 15.0,  # Total measurement duration
+            "current_speaker_slot_id": speaker.slot_id,
+            "current_speaker_slot_label": speaker.slot_label,
+            "speaker_device_id": speaker.device_id,
+            "total_microphones": len(session.microphones),
         },
+        session_id=session_id,
     )
     
-    # Notify the speaker to prepare for playback
-    await broadcast_to_devices(
-        [speaker.device_id],
-        "measurement.prepare_playback",
-        {
-            "session_id": session_id,
-            "job_id": session.job_id,
-            "audio_file_endpoint": f"/v1/measurement/audio?session_id={session_id}",
-            "speaker_slot_id": speaker.slot_id,
-        },
-    )
-    
-    measurement.phase = MeasurementPhase.WAITING_READY
+    measurement.phase = MeasurementPhase.NOTIFYING_CLIENTS
     
     return {
         "session_id": session_id,
-        "status": "preparing",
+        "status": "notifying_clients",
         "current_speaker": {
             "device_id": speaker.device_id,
             "slot_id": speaker.slot_id,
@@ -290,9 +353,10 @@ async def client_ready(
     device_id: str,
 ) -> dict[str, Any]:
     """
-    Handle a client signaling they are ready.
+    Step 3: Handle client ready acknowledgment.
     
-    When all clients are ready, the speaker is signaled to start playback.
+    Each client sends "measurement.ready" when they are prepared.
+    When all clients are ready, we request audio from the speaker.
     
     Returns:
         Status dict
@@ -305,44 +369,58 @@ async def client_ready(
     if measurement is None:
         raise ValueError("No active measurement")
     
-    if measurement.phase != MeasurementPhase.WAITING_READY:
-        raise ValueError(f"Invalid phase for ready: {measurement.phase}")
+    log.log_event_received(
+        "measurement.ready",
+        device_id=device_id,
+        session_id=session_id,
+        data={"phase": measurement.phase.value},
+    )
     
     # Mark the client as ready
     if measurement.speaker.device_id == device_id:
         measurement.speaker.is_ready = True
+        log.debug(f"Speaker {device_id} marked ready", component="coordinator", session_id=session_id)
     else:
         for mic in measurement.microphones:
             if mic.device_id == device_id:
                 mic.is_ready = True
+                log.debug(f"Microphone {device_id} marked ready", component="coordinator", session_id=session_id)
                 break
+    
+    # Count ready status
+    ready_mics = sum(1 for m in measurement.microphones if m.is_ready)
+    total_mics = len(measurement.microphones)
+    
+    log.info(
+        f"Ready status: speaker={measurement.speaker.is_ready}, mics={ready_mics}/{total_mics}",
+        component="coordinator",
+        session_id=session_id,
+    )
     
     # Check if all clients are ready
     if measurement.all_ready:
-        # Signal speaker to start playback
-        measurement.phase = MeasurementPhase.PLAYING
+        log.log_step(
+            3, "All Clients Ready - Requesting Audio",
+            session_id=session_id,
+        )
         
-        # Notify both speaker AND microphones that playback is starting
-        # Microphones need this signal to start recording
-        all_device_ids = [measurement.speaker.device_id] + [m.device_id for m in measurement.microphones]
+        # Step 4: Request audio from speaker
+        measurement.phase = MeasurementPhase.SPEAKER_DOWNLOADING
         await broadcast_to_devices(
-            all_device_ids,
-            "measurement.start_playback",
+            [measurement.speaker.device_id],
+            "measurement.request_audio",
             {
                 "session_id": session_id,
-                "speaker_slot_id": measurement.speaker.slot_id,
+                "audio_url": f"/v1/measurement/audio?session_id={session_id}",
             },
+            session_id=session_id,
         )
         
         return {
             "session_id": session_id,
             "status": "all_ready",
-            "action": "playback_started",
+            "action": "requesting_audio_from_speaker",
         }
-    
-    # Count ready status
-    ready_mics = sum(1 for m in measurement.microphones if m.is_ready)
-    total_mics = len(measurement.microphones)
     
     return {
         "session_id": session_id,
@@ -352,11 +430,16 @@ async def client_ready(
     }
 
 
-async def speaker_finished(session_id: str, device_id: str) -> dict[str, Any]:
+async def speaker_audio_ready(
+    session_id: str,
+    device_id: str,
+    audio_hash: str | None = None,
+) -> dict[str, Any]:
     """
-    Handle speaker signaling playback is complete.
+    Step 5: Handle speaker confirming audio is downloaded and ready.
     
-    This triggers microphones to stop recording and upload.
+    When speaker sends "measurement.speaker_audio_ready", we command all
+    microphones to start recording.
     
     Returns:
         Status dict
@@ -369,17 +452,165 @@ async def speaker_finished(session_id: str, device_id: str) -> dict[str, Any]:
     if measurement is None:
         raise ValueError("No active measurement")
     
-    if measurement.speaker.device_id != device_id:
-        raise ValueError("Only the current speaker can signal finished")
+    log.log_event_received(
+        "measurement.speaker_audio_ready",
+        device_id=device_id,
+        session_id=session_id,
+        data={"audio_hash": audio_hash},
+    )
     
-    if measurement.phase != MeasurementPhase.PLAYING:
-        raise ValueError(f"Invalid phase for speaker_finished: {measurement.phase}")
+    if measurement.speaker.device_id != device_id:
+        raise ValueError("Only the current speaker can signal audio ready")
+    
+    measurement.speaker.audio_received = True
+    measurement.audio_hash = audio_hash
+    measurement.phase = MeasurementPhase.SPEAKER_READY
+    
+    log.log_step(
+        5, "Speaker Audio Ready - Commanding Recording Start",
+        session_id=session_id,
+        data={"audio_hash": audio_hash},
+    )
+    
+    # Step 6: Command all microphones to start recording
+    measurement.phase = MeasurementPhase.STARTING_RECORDING
+    mic_device_ids = [m.device_id for m in measurement.microphones]
+    
+    await broadcast_to_devices(
+        mic_device_ids,
+        "measurement.start_recording",
+        {
+            "session_id": session_id,
+            "speaker_slot_id": measurement.speaker.slot_id,
+            "expected_duration_seconds": 15.0,
+        },
+        session_id=session_id,
+    )
+    
+    return {
+        "session_id": session_id,
+        "status": "commanding_recording_start",
+        "audio_hash": audio_hash,
+    }
+
+
+async def recording_started(
+    session_id: str,
+    device_id: str,
+) -> dict[str, Any]:
+    """
+    Step 7: Handle microphone confirming recording has started.
+    
+    When ALL microphones confirm recording started, we command the speaker
+    to start playback.
+    
+    Returns:
+        Status dict
+    """
+    session = await get_session(session_id)
+    if session is None:
+        raise ValueError(f"Session not found: {session_id}")
+    
+    measurement = session.current_measurement
+    if measurement is None:
+        raise ValueError("No active measurement")
+    
+    log.log_event_received(
+        "measurement.recording_started",
+        device_id=device_id,
+        session_id=session_id,
+    )
+    
+    # Mark the microphone as recording
+    for mic in measurement.microphones:
+        if mic.device_id == device_id:
+            mic.recording_started = True
+            log.debug(f"Microphone {device_id} started recording", component="coordinator", session_id=session_id)
+            break
+    
+    # Count recordings started
+    started_count = sum(1 for m in measurement.microphones if m.recording_started)
+    total_count = len(measurement.microphones)
+    
+    log.info(
+        f"Recordings started: {started_count}/{total_count}",
+        component="coordinator",
+        session_id=session_id,
+    )
+    
+    # Check if all microphones are recording
+    if measurement.all_recordings_started:
+        log.log_step(
+            7, "All Recordings Started - Commanding Playback",
+            session_id=session_id,
+        )
+        
+        # Step 8: Command speaker to start playback
+        measurement.phase = MeasurementPhase.PLAYING
+        await broadcast_to_devices(
+            [measurement.speaker.device_id],
+            "measurement.start_playback",
+            {
+                "session_id": session_id,
+            },
+            session_id=session_id,
+        )
+        
+        return {
+            "session_id": session_id,
+            "status": "all_recording",
+            "action": "playback_commanded",
+        }
+    
+    return {
+        "session_id": session_id,
+        "status": "waiting_recordings",
+        "recordings_started": f"{started_count}/{total_count}",
+    }
+
+
+async def playback_complete(
+    session_id: str,
+    device_id: str,
+) -> dict[str, Any]:
+    """
+    Step 9: Handle speaker signaling playback is complete.
+    
+    When speaker sends "measurement.playback_complete", we command all
+    microphones to stop recording and upload.
+    
+    Returns:
+        Status dict
+    """
+    session = await get_session(session_id)
+    if session is None:
+        raise ValueError(f"Session not found: {session_id}")
+    
+    measurement = session.current_measurement
+    if measurement is None:
+        raise ValueError("No active measurement")
+    
+    log.log_event_received(
+        "measurement.playback_complete",
+        device_id=device_id,
+        session_id=session_id,
+    )
+    
+    if measurement.speaker.device_id != device_id:
+        raise ValueError("Only the current speaker can signal playback complete")
     
     measurement.speaker.is_finished = True
-    measurement.phase = MeasurementPhase.RECORDING_COMPLETE
+    measurement.phase = MeasurementPhase.PLAYBACK_COMPLETE
     
-    # Signal all microphones to stop and upload
+    log.log_step(
+        9, "Playback Complete - Commanding Recording Stop",
+        session_id=session_id,
+    )
+    
+    # Step 10: Command all microphones to stop recording and upload
+    measurement.phase = MeasurementPhase.UPLOADING
     mic_device_ids = [m.device_id for m in measurement.microphones]
+    
     await broadcast_to_devices(
         mic_device_ids,
         "measurement.stop_recording",
@@ -389,12 +620,13 @@ async def speaker_finished(session_id: str, device_id: str) -> dict[str, Any]:
             "speaker_slot_id": measurement.speaker.slot_id,
             "upload_endpoint": f"/v1/jobs/{session.job_id}/uploads/",
         },
+        session_id=session_id,
     )
     
     return {
         "session_id": session_id,
-        "status": "recording_complete",
-        "waiting_for_uploads": True,
+        "status": "playback_complete",
+        "action": "commanding_upload",
     }
 
 
@@ -404,9 +636,9 @@ async def recording_uploaded(
     upload_name: str,
 ) -> dict[str, Any]:
     """
-    Handle a microphone signaling their recording was uploaded.
+    Step 11: Handle microphone signaling their recording was uploaded.
     
-    When all recordings are uploaded, trigger analysis.
+    When all recordings are uploaded, trigger processing or move to next speaker.
     
     Returns:
         Status dict
@@ -419,14 +651,37 @@ async def recording_uploaded(
     if measurement is None:
         raise ValueError("No active measurement")
     
+    log.log_event_received(
+        "measurement.recording_uploaded",
+        device_id=device_id,
+        session_id=session_id,
+        data={"upload_name": upload_name},
+    )
+    
     # Mark the microphone as having uploaded
     for mic in measurement.microphones:
         if mic.device_id == device_id:
             mic.recording_uploaded = True
+            log.debug(f"Microphone {device_id} uploaded recording", component="coordinator", session_id=session_id)
             break
+    
+    # Count uploads
+    uploaded_count = sum(1 for m in measurement.microphones if m.recording_uploaded)
+    total_count = len(measurement.microphones)
+    
+    log.info(
+        f"Recordings uploaded: {uploaded_count}/{total_count}",
+        component="coordinator",
+        session_id=session_id,
+    )
     
     # Check if all recordings are uploaded
     if measurement.all_recordings_uploaded:
+        log.log_step(
+            11, "All Recordings Uploaded - Processing",
+            session_id=session_id,
+        )
+        
         measurement.phase = MeasurementPhase.PROCESSING
         measurement.finished_at = datetime.utcnow()
         
@@ -434,9 +689,22 @@ async def recording_uploaded(
         session.completed_measurements.append(measurement.speaker.slot_id)
         session.current_speaker_index += 1
         
+        # Notify all participants of progress
+        all_device_ids = [s.device_id for s in session.speakers] + [m.device_id for m in session.microphones]
+        
         # Check if there are more speakers
         if session.current_speaker_index < len(session.speakers):
-            # More speakers to measure
+            await broadcast_to_devices(
+                all_device_ids,
+                "measurement.speaker_complete",
+                {
+                    "session_id": session_id,
+                    "completed_speaker_slot_id": measurement.speaker.slot_id,
+                    "remaining_speakers": len(session.speakers) - session.current_speaker_index,
+                },
+                session_id=session_id,
+            )
+            
             return {
                 "session_id": session_id,
                 "status": "speaker_measurement_complete",
@@ -449,8 +717,13 @@ async def recording_uploaded(
             session.status = "completed"
             measurement.phase = MeasurementPhase.COMPLETED
             
-            # Notify all participants that measurement session is complete
-            all_device_ids = [s.device_id for s in session.speakers] + [m.device_id for m in session.microphones]
+            log.info(
+                "Measurement session complete",
+                component="coordinator",
+                session_id=session_id,
+                data={"completed_speakers": session.completed_measurements},
+            )
+            
             await broadcast_to_devices(
                 all_device_ids,
                 "measurement.session_complete",
@@ -459,6 +732,7 @@ async def recording_uploaded(
                     "job_id": session.job_id,
                     "completed_speakers": session.completed_measurements,
                 },
+                session_id=session_id,
             )
             
             return {
@@ -467,10 +741,6 @@ async def recording_uploaded(
                 "completed_speakers": session.completed_measurements,
             }
     
-    # Still waiting for uploads
-    uploaded_count = sum(1 for m in measurement.microphones if m.recording_uploaded)
-    total_count = len(measurement.microphones)
-    
     return {
         "session_id": session_id,
         "status": "waiting_uploads",
@@ -478,11 +748,48 @@ async def recording_uploaded(
     }
 
 
+# Legacy function for backward compatibility
+async def start_next_speaker_measurement(session_id: str) -> dict[str, Any]:
+    """
+    Legacy function - redirects to start_measurement.
+    
+    DEPRECATED: Use start_measurement instead.
+    """
+    log.warning(
+        "start_next_speaker_measurement is deprecated, use start_measurement",
+        component="coordinator",
+        session_id=session_id,
+    )
+    return await start_measurement(session_id)
+
+
+# Legacy function for backward compatibility  
+async def speaker_finished(session_id: str, device_id: str) -> dict[str, Any]:
+    """
+    Legacy function - redirects to playback_complete.
+    
+    DEPRECATED: Use playback_complete instead.
+    """
+    log.warning(
+        "speaker_finished is deprecated, use playback_complete",
+        component="coordinator",
+        session_id=session_id,
+    )
+    return await playback_complete(session_id, device_id)
+
+
 async def get_session_status(session_id: str) -> dict[str, Any]:
     """Get the current status of a measurement session."""
     session = await get_session(session_id)
     if session is None:
         raise ValueError(f"Session not found: {session_id}")
+    
+    log.debug(
+        f"Getting session status",
+        component="coordinator",
+        session_id=session_id,
+        data={"status": session.status},
+    )
     
     result = {
         "session_id": session_id,
@@ -512,22 +819,33 @@ async def get_session_status(session_id: str) -> dict[str, Any]:
             "speaker_slot_id": m.speaker.slot_id,
             "phase": m.phase.value,
             "speaker_ready": m.speaker.is_ready,
+            "speaker_audio_received": m.speaker.audio_received,
             "microphones_ready": sum(1 for mic in m.microphones if mic.is_ready),
+            "recordings_started": sum(1 for mic in m.microphones if mic.recording_started),
             "recordings_uploaded": sum(1 for mic in m.microphones if mic.recording_uploaded),
+            "audio_hash": m.audio_hash,
         }
     
     return result
 
 
-async def cancel_session(session_id: str) -> dict[str, Any]:
+async def cancel_session(session_id: str, reason: str = "cancelled_by_admin") -> dict[str, Any]:
     """Cancel a measurement session and notify all clients."""
     session = await get_session(session_id)
     if session is None:
         raise ValueError(f"Session not found: {session_id}")
     
+    log.warning(
+        f"Cancelling session",
+        component="coordinator",
+        session_id=session_id,
+        data={"reason": reason},
+    )
+    
     session.status = "cancelled"
     if session.current_measurement:
         session.current_measurement.phase = MeasurementPhase.FAILED
+        session.current_measurement.error = reason
     
     # Notify all participants
     all_device_ids = (
@@ -537,7 +855,64 @@ async def cancel_session(session_id: str) -> dict[str, Any]:
     await broadcast_to_devices(
         all_device_ids,
         "measurement.session_cancelled",
-        {"session_id": session_id, "reason": "cancelled_by_admin"},
+        {"session_id": session_id, "reason": reason},
+        session_id=session_id,
     )
     
-    return {"session_id": session_id, "status": "cancelled"}
+    return {"session_id": session_id, "status": "cancelled", "reason": reason}
+
+
+async def handle_error(
+    session_id: str,
+    device_id: str,
+    error_message: str,
+    error_code: str | None = None,
+) -> dict[str, Any]:
+    """
+    Handle an error reported by a client during measurement.
+    
+    This may cancel the current measurement depending on severity.
+    
+    Returns:
+        Status dict
+    """
+    session = await get_session(session_id)
+    if session is None:
+        raise ValueError(f"Session not found: {session_id}")
+    
+    log.error(
+        f"Client error reported: {error_message}",
+        component="coordinator",
+        session_id=session_id,
+        device_id=device_id,
+        data={"error_code": error_code},
+    )
+    
+    measurement = session.current_measurement
+    if measurement:
+        measurement.error = error_message
+        measurement.phase = MeasurementPhase.FAILED
+    
+    # Notify all participants of the error
+    all_device_ids = (
+        [s.device_id for s in session.speakers] +
+        [m.device_id for m in session.microphones]
+    )
+    await broadcast_to_devices(
+        all_device_ids,
+        "measurement.error",
+        {
+            "session_id": session_id,
+            "error_device_id": device_id,
+            "error_message": error_message,
+            "error_code": error_code,
+        },
+        session_id=session_id,
+    )
+    
+    return {
+        "session_id": session_id,
+        "status": "error",
+        "error_device_id": device_id,
+        "error_message": error_message,
+    }
