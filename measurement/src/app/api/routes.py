@@ -3,6 +3,7 @@ from __future__ import annotations
 import pathlib
 import re
 import uuid
+import hashlib
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -176,6 +177,9 @@ def get_measurement_audio(
     if session_id:
         filename = f"measurement_{session_id}.{extension}"
     
+    # Calculate SHA-256 hash of the audio bytes
+    sha256_hash = hashlib.sha256(audio_bytes).hexdigest()
+
     # Save generated audio to disk for debugging
     try:
         debug_dir = pathlib.Path(settings.debug_dir)
@@ -194,6 +198,7 @@ def get_measurement_audio(
             "Content-Disposition": f'attachment; filename="{filename}"',
             "X-Duration-Seconds": str(config.total_duration),
             "X-Sample-Rate": str(config.sample_rate),
+            "X-Audio-Hash": sha256_hash,
         },
     )
 
