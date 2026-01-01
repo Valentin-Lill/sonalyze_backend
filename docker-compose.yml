@@ -62,7 +62,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Lobby service - manages lobbies and participants
+  # Lobby service - manages lobbies, participants, and measurement sessions
   lobby:
     build:
       context: ./lobby
@@ -72,6 +72,7 @@ services:
     environment:
       DATABASE_URL: postgresql+asyncpg://lobby:lobby_secret@postgres-lobby:5432/lobby
       GATEWAY_URL: http://gateway:8000
+      MEASUREMENT_URL: http://measurement:8000
       INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
     depends_on:
       postgres-lobby:
@@ -82,7 +83,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # Measurement service - handles audio analysis jobs
+  # Measurement service - handles stateless audio analysis jobs
   measurement:
     build:
       context: ./measurement
@@ -92,8 +93,6 @@ services:
     environment:
       MEASUREMENT_DATA_DIR: /data
       MEASUREMENT_MAX_UPLOAD_MB: 50
-      GATEWAY_URL: http://gateway:8000
-      INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
       HOST: 0.0.0.0
       PORT: 8000
     volumes:
