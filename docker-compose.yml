@@ -6,8 +6,7 @@ services:
       POSTGRES_USER: sonalyze
       POSTGRES_PASSWORD: sonalyze_secret
       POSTGRES_DB: sonalyze
-    ports:
-      - "5432:5432"
+    # No external ports - only accessible within Docker network
     volumes:
       - postgres_data:/var/lib/postgresql/data
     healthcheck:
@@ -23,8 +22,7 @@ services:
       POSTGRES_USER: lobby
       POSTGRES_PASSWORD: lobby_secret
       POSTGRES_DB: lobby
-    ports:
-      - "5433:5432"
+    # No external ports - only accessible within Docker network
     volumes:
       - postgres_lobby_data:/var/lib/postgresql/data
     healthcheck:
@@ -39,7 +37,7 @@ services:
       context: ./gateway
       dockerfile: Dockerfile
     ports:
-      - "8000:8000"
+      - "8000:8000"  # Only the gateway is exposed externally
     environment:
       LOBBY_URL: http://lobby:8000
       MEASUREMENT_URL: http://measurement:8000
@@ -67,8 +65,7 @@ services:
     build:
       context: ./lobby
       dockerfile: Dockerfile
-    ports:
-      - "8001:8000"
+    # No external ports - only accessible within Docker network
     environment:
       DATABASE_URL: postgresql+asyncpg://lobby:lobby_secret@postgres-lobby:5432/lobby
       GATEWAY_URL: http://gateway:8000
@@ -88,8 +85,7 @@ services:
     build:
       context: ./measurement
       dockerfile: Dockerfile
-    ports:
-      - "8002:8000"
+    # No external ports - only accessible within Docker network
     environment:
       MEASUREMENT_DATA_DIR: /data
       MEASUREMENT_MAX_UPLOAD_MB: 50
@@ -109,8 +105,7 @@ services:
     build:
       context: ./simulation
       dockerfile: Dockerfile
-    ports:
-      - "8003:8000"
+    # No external ports - only accessible within Docker network
     environment:
       PORT: 8000
     healthcheck:
@@ -124,8 +119,7 @@ services:
     build:
       context: ./storage
       dockerfile: Dockerfile
-    ports:
-      - "8004:8000"
+    # No external ports - only accessible within Docker network
     environment:
       DATABASE_URL: postgresql+asyncpg://sonalyze:sonalyze_secret@postgres:5432/sonalyze
       RUN_MIGRATIONS: "true"

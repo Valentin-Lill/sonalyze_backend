@@ -4,7 +4,9 @@ import json
 from contextlib import asynccontextmanager
 from typing import Any
 
-from fastapi import FastAPI, Header, HTTPException, Query, WebSocket, WebSocketDisconnect
+import httpx
+from fastapi import FastAPI, Header, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
+from fastapi.responses import Response, StreamingResponse
 
 from gateway.config import settings
 from gateway.connection_manager import ConnectionManager
@@ -24,11 +26,15 @@ from gateway.router import EventRouter
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     http = ServiceHttpClient(timeout_seconds=settings.http_timeout_seconds)
+    # Create a separate client for proxying HTTP requests (longer timeout for file uploads/downloads)
+    proxy_http = httpx.AsyncClient(timeout=60.0)
     app.state.http = http
+    app.state.proxy_http = proxy_http
     app.state.router = EventRouter(settings, http)
     app.state.connections = ConnectionManager()
     yield
     await http.close()
+    await proxy_http.aclose()
 
 
 app = FastAPI(title="sonalyze-gateway", lifespan=lifespan)
@@ -37,6 +43,98 @@ app = FastAPI(title="sonalyze-gateway", lifespan=lifespan)
 @app.get("/healthz")
 def healthz() -> dict[str, str]:
     return {"status": "ok"}
+
+
+# ============================================================
+# HTTP Proxy Routes for Measurement Service
+# ============================================================
+# These routes proxy HTTP requests (audio downloads, file uploads) 
+# to the internal measurement service, allowing clients to access
+# measurement APIs through the gateway without direct access.
+
+@app.api_route("/v1/measurement/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_measurement(request: Request, path: str) -> Response:
+    """Proxy measurement service API requests."""
+    proxy_http: httpx.AsyncClient = app.state.proxy_http
+    target_url = f"{settings.measurement_url}/v1/measurement/{path}"
+    
+    # Build query string
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+    
+    print(f"[gateway] Proxying {request.method} to {target_url}")
+    
+    try:
+        # Forward request body for POST/PUT
+        body = await request.body() if request.method in ("POST", "PUT") else None
+        
+        # Forward headers (filter out hop-by-hop headers)
+        headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower() not in ("host", "connection", "keep-alive", "transfer-encoding")
+        }
+        
+        response = await proxy_http.request(
+            method=request.method,
+            url=target_url,
+            content=body,
+            headers=headers,
+        )
+        
+        # Return response with original headers
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={k: v for k, v in response.headers.items() if k.lower() not in ("transfer-encoding", "connection")},
+            media_type=response.headers.get("content-type"),
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Upstream timeout")
+    except httpx.RequestError as exc:
+        print(f"[gateway] Proxy error: {exc}")
+        raise HTTPException(status_code=502, detail="Upstream unreachable")
+
+
+@app.api_route("/v1/jobs/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_jobs(request: Request, path: str) -> Response:
+    """Proxy jobs service API requests (file uploads, job management)."""
+    proxy_http: httpx.AsyncClient = app.state.proxy_http
+    target_url = f"{settings.measurement_url}/v1/jobs/{path}"
+    
+    # Build query string
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+    
+    print(f"[gateway] Proxying {request.method} to {target_url}")
+    
+    try:
+        # For multipart file uploads, we need to stream the body
+        body = await request.body()
+        
+        # Forward headers (filter out hop-by-hop headers)
+        headers = {
+            k: v for k, v in request.headers.items()
+            if k.lower() not in ("host", "connection", "keep-alive", "transfer-encoding")
+        }
+        
+        response = await proxy_http.request(
+            method=request.method,
+            url=target_url,
+            content=body,
+            headers=headers,
+        )
+        
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={k: v for k, v in response.headers.items() if k.lower() not in ("transfer-encoding", "connection")},
+            media_type=response.headers.get("content-type"),
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Upstream timeout")
+    except httpx.RequestError as exc:
+        print(f"[gateway] Proxy error: {exc}")
+        raise HTTPException(status_code=502, detail="Upstream unreachable")
 
 
 def _error(event: str, request_id: str | None, code: str, message: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:

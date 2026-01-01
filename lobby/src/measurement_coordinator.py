@@ -358,13 +358,14 @@ async def client_ready(
         logger.info(f"All clients ready for session {session_id}, requesting audio")
         
         # Step 4: Request audio from speaker
+        # Use gateway_url for external clients to download audio through the gateway proxy
         measurement.phase = MeasurementPhase.SPEAKER_DOWNLOADING
         await _broadcast_to_devices(
             [measurement.speaker.device_id],
             "measurement.request_audio",
             {
                 "session_id": session_id,
-                "audio_url": f"{settings.measurement_url}/v1/measurement/audio?session_id={session_id}",
+                "audio_url": f"{settings.gateway_url}/v1/measurement/audio?session_id={session_id}",
             },
             session_id=session_id,
         )
@@ -530,6 +531,7 @@ async def playback_complete(
     measurement.phase = MeasurementPhase.PLAYBACK_COMPLETE
     
     # Step 10: Command all microphones to stop recording and upload
+    # Use gateway_url for external clients to upload recordings through the gateway proxy
     measurement.phase = MeasurementPhase.UPLOADING
     mic_device_ids = [m.device_id for m in measurement.microphones]
     
@@ -540,7 +542,7 @@ async def playback_complete(
             "session_id": session_id,
             "job_id": session.job_id,
             "speaker_slot_id": measurement.speaker.slot_id,
-            "upload_endpoint": f"{settings.measurement_url}/v1/jobs/{session.job_id}/uploads/",
+            "upload_endpoint": f"{settings.gateway_url}/v1/jobs/{session.job_id}/uploads/",
         },
         session_id=session_id,
     )
