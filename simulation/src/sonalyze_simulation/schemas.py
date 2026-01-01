@@ -103,3 +103,29 @@ class SimulationResponse(BaseModel):
     sample_rate_hz: int
     pairs: list[PairResult]
     warnings: list[str] = Field(default_factory=list)
+
+
+class MetricReference(BaseModel):
+    key: str = Field(description="Metric identifier that matches simulation response keys", min_length=1)
+    label: str = Field(description="Human-friendly metric label", min_length=1)
+    unit: str | None = Field(default=None, description="Optional unit displayed alongside the value")
+    value: float = Field(description="Target value considered 'good' for this metric")
+    min_value: float | None = Field(
+        default=None,
+        description="Optional lower bound used for chart normalization",
+    )
+    max_value: float | None = Field(
+        default=None,
+        description="Optional upper bound used for chart normalization",
+    )
+
+
+class RoomReferenceProfile(BaseModel):
+    id: str = Field(description="Stable identifier for the room archetype")
+    display_name: str = Field(description="Human friendly room label")
+    metrics: list[MetricReference]
+    notes: str | None = Field(default=None, description="Optional descriptive copy")
+
+
+class RoomReferenceProfilesResponse(BaseModel):
+    profiles: list[RoomReferenceProfile]

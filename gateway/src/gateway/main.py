@@ -137,6 +137,49 @@ async def proxy_jobs(request: Request, path: str) -> Response:
         raise HTTPException(status_code=502, detail="Upstream unreachable")
 
 
+@app.api_route("/v1/simulation/{path:path}", methods=["GET", "POST", "PUT", "DELETE"])
+async def proxy_simulation(request: Request, path: str) -> Response:
+    """Proxy simulation service API requests."""
+    proxy_http: httpx.AsyncClient = app.state.proxy_http
+    target_url = f"{settings.simulation_url}/{path}".rstrip("/")
+
+    if request.query_params:
+        target_url += f"?{request.query_params}"
+
+    print(f"[gateway] Proxying {request.method} to {target_url}")
+
+    try:
+        body = await request.body() if request.method in ("POST", "PUT") else None
+        headers = {
+            k: v
+            for k, v in request.headers.items()
+            if k.lower() not in ("host", "connection", "keep-alive", "transfer-encoding")
+        }
+
+        response = await proxy_http.request(
+            method=request.method,
+            url=target_url,
+            content=body,
+            headers=headers,
+        )
+
+        return Response(
+            content=response.content,
+            status_code=response.status_code,
+            headers={
+                k: v
+                for k, v in response.headers.items()
+                if k.lower() not in ("transfer-encoding", "connection")
+            },
+            media_type=response.headers.get("content-type"),
+        )
+    except httpx.TimeoutException:
+        raise HTTPException(status_code=504, detail="Upstream timeout")
+    except httpx.RequestError as exc:
+        print(f"[gateway] Proxy error: {exc}")
+        raise HTTPException(status_code=502, detail="Upstream unreachable")
+
+
 def _error(event: str, request_id: str | None, code: str, message: str, *, details: dict[str, Any] | None = None) -> dict[str, Any]:
     return ServerMessage(
         type="error",
