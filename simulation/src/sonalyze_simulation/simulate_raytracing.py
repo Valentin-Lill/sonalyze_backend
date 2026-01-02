@@ -52,6 +52,7 @@ def _pra_material(absorption: float, scattering: float):
 def run_raytracing_simulation(
     request: SimulationRequest,
     furniture_data: list[dict] | None = None,
+    max_order: int | None = None,
 ) -> SimulationResponse:
     """
     Run acoustic simulation using ray tracing with furniture support.
@@ -64,6 +65,7 @@ def run_raytracing_simulation(
         furniture_data: Optional raw furniture data from frontend.
                        If provided, this will be converted and used.
                        If None, request.furniture boxes are used directly.
+        max_order: Maximum number of ray bounces (default from request, capped at 10)
                        
     Returns:
         SimulationResponse with acoustic metrics for each source-mic pair
@@ -71,8 +73,8 @@ def run_raytracing_simulation(
     import pyroomacoustics as pra
     
     fs = int(request.sample_rate_hz)
-    # Use lower max_order for ray tracing (recommended: 3)
-    max_order = min(int(request.max_order), 5)
+    # Use provided max_order, fall back to request, cap at 30
+    max_order = min(max_order if max_order is not None else int(request.max_order), 30)
     
     warnings: list[str] = []
     

@@ -33,6 +33,7 @@ def run_simulation(
     request: SimulationRequest,
     raw_furniture: list[dict[str, Any]] | None = None,
     use_raytracing: bool = False,
+    raytracing_bounces: int = 3,
 ) -> SimulationResponse:
     """
     Run acoustic simulation.
@@ -46,6 +47,7 @@ def run_simulation(
         request: Simulation request with room, sources, microphones
         raw_furniture: Optional raw furniture data from frontend with rotation info
         use_raytracing: Force ray tracing mode even without furniture (experimental)
+        raytracing_bounces: Number of bounces for ray tracing (default 3, max 10)
         
     Returns:
         SimulationResponse with acoustic metrics
@@ -56,7 +58,11 @@ def run_simulation(
     if use_raytracing or has_furniture:
         # Use ray tracing simulation for furniture support
         from sonalyze_simulation.simulate_raytracing import run_raytracing_simulation
-        return run_raytracing_simulation(request, furniture_data=raw_furniture)
+        return run_raytracing_simulation(
+            request,
+            furniture_data=raw_furniture,
+            max_order=raytracing_bounces,
+        )
     
     # No furniture - use standard ISM simulation
     return _run_ism_simulation(request)

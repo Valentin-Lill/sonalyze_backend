@@ -58,6 +58,8 @@ def _handle_simulation_run(
         raw_furniture = normalized.pop("raw_furniture", None)
         # Extract use_raytracing flag for experimental raytracing mode
         use_raytracing = bool(message.data.get("use_raytracing", False))
+        # Extract raytracing_bounces (default 3, capped at 30)
+        raytracing_bounces = min(int(message.data.get("raytracing_bounces", 3)), 30)
         request = SimulationRequest.model_validate(normalized)
     except (ValidationError, ValueError) as exc:
         logger.warning(
@@ -68,7 +70,12 @@ def _handle_simulation_run(
         raise HTTPException(status_code=400, detail=f"Invalid simulation request: {exc}") from exc
 
     try:
-        result = run_simulation(request, raw_furniture=raw_furniture, use_raytracing=use_raytracing)
+        result = run_simulation(
+            request,
+            raw_furniture=raw_furniture,
+            use_raytracing=use_raytracing,
+            raytracing_bounces=raytracing_bounces,
+        )
     except Exception:
         logger.exception(
             "Simulation execution failed (request_id=%s)",
