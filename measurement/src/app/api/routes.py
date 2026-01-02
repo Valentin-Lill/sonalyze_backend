@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import dataclasses
+import hashlib
+import logging
 import pathlib
 import re
 import uuid
-import hashlib
 
 from fastapi import APIRouter, File, HTTPException, Query, UploadFile
 from fastapi.responses import Response
@@ -11,9 +13,13 @@ from fastapi.responses import Response
 from app.analysis.audio_generator import (
     MeasurementSignalConfig,
     generate_measurement_audio_bytes,
+    generate_measurement_signal,
+    generate_log_chirp,
+    apply_fade,
     get_signal_timing,
 )
 from app.analysis.io import normalize_peak, read_audio_mono
+from app.reference_store import reference_store
 from app.analysis.metrics import (
     clarity_definition_metrics,
     deconvolve_sweep,
@@ -26,6 +32,8 @@ from app.analysis.sti import sti_from_impulse_response
 from app.models import AnalyzeRequest, AnalyzeResponse, CreateJobRequest, CreateJobResponse
 from app.settings import settings
 from app.storage import LocalJobStore
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1")
 store = LocalJobStore(root_dir=pathlib.Path(settings.data_dir))
@@ -155,6 +163,9 @@ def get_measurement_audio(
     - 2.5s - 12.5s: Measurement Sweep (20Hz - 20kHz)
     - 12.5s - 14.5s: Silence (reverb tail)
     - 14.5s - 15.0s: Sync Chirp
+    
+    The chirp and sweep signals are stored for later use during analysis,
+    keyed by the audio hash returned in X-Audio-Hash header.
     """
     config = MeasurementSignalConfig(sample_rate=sample_rate)
     
@@ -180,6 +191,43 @@ def get_measurement_audio(
     # Calculate SHA-256 hash of the audio bytes
     sha256_hash = hashlib.sha256(audio_bytes).hexdigest()
 
+    # Store reference signals (chirp, sweep, full signal) for later alignment/deconvolution
+    # This ensures we use the exact same signals that were played during measurement
+    if not reference_store.has_reference(sha256_hash):
+        try:
+            # Generate the raw signals for storage
+            full_signal, _ = generate_measurement_signal(config)
+            
+            # Generate the sync chirp
+            fade_samples = int(config.fade_duration * config.sample_rate)
+            chirp = generate_log_chirp(
+                duration=config.sync_chirp_duration,
+                f_start=config.sync_chirp_f_start,
+                f_end=config.sync_chirp_f_end,
+                sample_rate=config.sample_rate,
+                amplitude=config.amplitude,
+            )
+            chirp = apply_fade(chirp, fade_samples)
+            
+            # Extract the sweep from the full signal
+            timing = get_signal_timing(config)
+            sweep_start = int(timing["sweep_start"] * config.sample_rate)
+            sweep_end = int(timing["sweep_end"] * config.sample_rate)
+            sweep = full_signal[sweep_start:sweep_end]
+            
+            # Store everything
+            reference_store.store_reference(
+                audio_hash=sha256_hash,
+                sample_rate=config.sample_rate,
+                config_dict=dataclasses.asdict(config),
+                chirp=chirp,
+                sweep=sweep,
+                full_signal=full_signal,
+            )
+            logger.info(f"Stored reference signals for audio hash {sha256_hash[:16]}...")
+        except Exception as e:
+            logger.warning(f"Failed to store reference signals: {e}")
+
     # Save generated audio to disk for debugging
     try:
         debug_dir = pathlib.Path(settings.debug_dir)
@@ -187,9 +235,9 @@ def get_measurement_audio(
         debug_file = debug_dir / filename
         with open(debug_file, "wb") as f:
             f.write(audio_bytes)
-        print(f"Saved debug audio to {debug_file}")
+        logger.info(f"Saved debug audio to {debug_file}")
     except Exception as e:
-        print(f"Failed to save debug audio: {e}")
+        logger.warning(f"Failed to save debug audio: {e}")
     
     return Response(
         content=audio_bytes,
