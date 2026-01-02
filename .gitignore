@@ -205,3 +205,11 @@ cython_debug/
 marimo/_static/
 marimo/_lsp/
 __marimo__/
+
+# Debug audio files (keep folder with .gitkeep)
+measurement/debug_audio/*
+!measurement/debug_audio/.gitkeep
+
+# Measurement data files (keep folder with .gitkeep)
+measurement_data/*
+!measurement_data/.gitkeep
