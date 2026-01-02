@@ -1,355 +1,272 @@
 # Sonalyze Backend
 
-A microservices-based backend for the Sonalyze acoustic measurement and analysis application.
+A **microservices-based backend** for the Sonalyze acoustic measurement and room analysis application. The system enables multi-device synchronized acoustic measurements, room impulse response analysis, and acoustic simulation.
 
-## Architecture Overview
+## Table of Contents
 
-The Sonalyze backend consists of five microservices that work together to provide acoustic measurement, analysis, and simulation capabilities:
+- [Overview](#overview)
+- [Architecture](#architecture)
+- [Microservices](#microservices)
+- [Getting Started](#getting-started)
+- [WebSocket Protocol](#websocket-protocol)
+- [Environment Variables](#environment-variables)
+- [Development](#development)
+- [License](#license)
+
+---
+
+## Overview
+
+Sonalyze is a platform for measuring and analyzing room acoustics. The backend supports:
+
+- **Multi-device measurement sessions**: Coordinate multiple smartphones acting as speakers and microphones
+- **Real-time communication**: WebSocket-based protocol for synchronized measurements
+- **Acoustic analysis**: Compute RT60, EDT, C50/C80, DRR, STI from recordings
+- **Room simulation**: Predict acoustic properties using pyroomacoustics
+- **Persistent storage**: Track devices, lobbies, measurements, and results
+
+---
+
+## Architecture
 
 ```
-                    ┌─────────────────────────────────────────────────┐
-                    │                   Clients                        │
-                    │            (Mobile/Web Apps)                     │
-                    └─────────────────────┬───────────────────────────┘
-                                          │
-                                          │ WebSocket / HTTP
-                                          ▼
-                    ┌─────────────────────────────────────────────────┐
-                    │                  Gateway                         │
-                    │              (Port 8000)                         │
-                    │   - WebSocket connection management              │
-                    │   - Event routing                                │
-                    │   - Rate limiting                                │
-                    └─────────┬──────────────┬───────────────┬────────┘
-                              │              │               │
-              ┌───────────────┘              │               └───────────────┐
-              │                              │                               │
-              ▼                              ▼                               ▼
-┌─────────────────────────┐  ┌─────────────────────────┐  ┌─────────────────────────┐
-│         Lobby           │  │      Measurement        │  │       Simulation        │
-│       (Port 8001)       │  │       (Port 8002)       │  │       (Port 8003)       │
-│  - Lobby management     │  │  - Audio processing     │  │  - Room acoustics       │
-│  - Participants         │  │  - Analysis jobs        │  │  - RIR generation       │
-│  - Role assignment      │  │  - RT60, STI metrics    │  │  - Acoustic metrics     │
-└───────────┬─────────────┘  └─────────────────────────┘  └─────────────────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│        Storage          │
-│       (Port 8004)       │
-│  - Persistent data      │
-│  - PostgreSQL           │
-│  - Alembic migrations   │
-└───────────┬─────────────┘
-            │
-            ▼
-┌─────────────────────────┐
-│       PostgreSQL        │
-│       (Port 5432)       │
-└─────────────────────────┘
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                 CLIENTS                                          │
+│                        (Flutter Mobile App, Web Browser)                         │
+└─────────────────────────────────────┬───────────────────────────────────────────┘
+                                      │
+                                      │ WebSocket + HTTP
+                                      ▼
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                 GATEWAY                                          │
+│                              (Port 8000)                                         │
+│                                                                                  │
+│  ┌─────────────────────┐  ┌────────────────────┐  ┌─────────────────────────┐   │
+│  │   WebSocket Hub     │  │    HTTP Proxy      │  │   Internal Broadcast    │   │
+│  │   /ws               │  │    /v1/*           │  │   /internal/broadcast   │   │
+│  │                     │  │                    │  │                         │   │
+│  │ • Device tracking   │  │ • Measurement API  │  │ • Push events to        │   │
+│  │ • Rate limiting     │  │ • Job uploads      │  │   connected clients     │   │
+│  │ • Event routing     │  │ • Simulation API   │  │                         │   │
+│  └──────────┬──────────┘  └─────────┬──────────┘  └────────────┬────────────┘   │
+│             │                       │                          │                 │
+│             └───────────────────────┴──────────────────────────┘                 │
+│                                     │                                            │
+│                              Event Router                                        │
+└─────────────────────────────────────┬───────────────────────────────────────────┘
+                                      │
+          ┌───────────────────────────┼───────────────────────────┐
+          │                           │                           │
+          ▼                           ▼                           ▼
+┌─────────────────────┐   ┌─────────────────────┐   ┌─────────────────────┐
+│       LOBBY         │   │    MEASUREMENT      │   │     SIMULATION      │
+│    (Port 8001)      │   │     (Port 8002)     │   │     (Port 8003)     │
+│                     │   │                     │   │                     │
+│ • Lobby CRUD        │   │ • Audio generation  │   │ • Room acoustics    │
+│ • Participant mgmt  │   │ • Job management    │   │ • ISM / Ray tracing │
+│ • Role assignment   │   │ • File uploads      │   │ • Material database │
+│ • 11-step protocol  │   │ • Acoustic analysis │   │ • Reference profiles│
+│ • Real-time events  │   │ • Reference store   │   │                     │
+│                     │   │                     │   │                     │
+│ [PostgreSQL/SQLite] │   │ [File Storage]      │   │ [Stateless]         │
+└──────────┬──────────┘   └─────────────────────┘   └─────────────────────┘
+           │
+           │ Broadcasts
+           ▼
+    ┌─────────────┐
+    │   Gateway   │
+    │  (Clients)  │
+    └─────────────┘
+                          
+┌─────────────────────────────────────────────────────────────────────────────────┐
+│                                 STORAGE                                          │
+│                              (Port 8004)                                         │
+│                                                                                  │
+│  Persistent REST API for all domain entities                                    │
+│                                                                                  │
+│  /v1/devices  /v1/lobbies  /v1/participants  /v1/measurements                   │
+│  /v1/analysis-outputs  /v1/simulation-jobs  /v1/simulation-results              │
+│                                                                                  │
+│                          ┌─────────────────┐                                     │
+│                          │   PostgreSQL    │                                     │
+│                          │   + Alembic     │                                     │
+│                          └─────────────────┘                                     │
+└─────────────────────────────────────────────────────────────────────────────────┘
 ```
+
+### Service Communication Flow
+
+```
+┌──────────┐     WebSocket      ┌─────────┐     HTTP POST      ┌─────────────┐
+│  Client  │ ─────────────────► │ Gateway │ ─────────────────► │ Lobby/Meas/ │
+│          │                    │         │  /gateway/handle   │ Simulation  │
+│          │ ◄───────────────── │         │ ◄───────────────── │             │
+└──────────┘   Response/Event   └────┬────┘     Response       └─────────────┘
+                                     │
+                                     │ POST /internal/broadcast
+                                     │ (from services)
+                                     ▼
+                              ┌─────────────┐
+                              │ Push events │
+                              │ to clients  │
+                              └─────────────┘
+```
+
+---
 
 ## Microservices
 
+| Service | Port | Description | Database |
+|---------|------|-------------|----------|
+| **Gateway** | 8000 | WebSocket hub, HTTP proxy, event router | None |
+| **Lobby** | 8001 | Lobby management, measurement coordination | PostgreSQL |
+| **Measurement** | 8002 | Audio generation, analysis, job storage | File system |
+| **Simulation** | 8003 | Room acoustics simulation | None |
+| **Storage** | 8004 | Persistent data API | PostgreSQL |
+
 ### Gateway Service
 
-**Purpose:** Entry point for all client connections. Handles WebSocket connections, message routing, and rate limiting.
+The **single entry point** for all client connections.
 
-**Features:**
-- WebSocket connection management with device identification
-- Event-based message routing to downstream services
-- Rate limiting (configurable RPS and burst)
-- Internal broadcast API for server-to-client messaging
+| Feature | Description |
+|---------|-------------|
+| WebSocket | Device identification, rate limiting, message routing |
+| HTTP Proxy | Forwards `/v1/measurement/*`, `/v1/jobs/*`, `/v1/simulation/*` |
+| Broadcast API | Push events to connected clients by device ID |
 
-**Events Routed:**
+**Event Routing:**
 - `lobby.*`, `role.*` → Lobby Service
-- `measurement.*`, `analysis.*` → Measurement Service
+- `measurement.create_session`, `measurement.start_speaker`, etc. → Lobby (stateful)
+- `measurement.create_job`, `analysis.run` → Measurement (stateless)
 - `simulation.*` → Simulation Service
 
-**Environment Variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `LOBBY_URL` | `http://lobby:8000` | Lobby service URL |
-| `MEASUREMENT_URL` | `http://measurement:8000` | Measurement service URL |
-| `SIMULATION_URL` | `http://simulation:8000` | Simulation service URL |
-| `INTERNAL_AUTH_TOKEN` | - | Token for internal broadcast API |
-| `MAX_MESSAGE_BYTES` | `65536` | Maximum message size |
-| `RATE_LIMIT_RPS` | `10.0` | Rate limit (requests/second) |
-| `RATE_LIMIT_BURST` | `20` | Rate limit burst capacity |
-| `HTTP_TIMEOUT_SECONDS` | `10.0` | Upstream request timeout |
+[📖 Full Documentation](gateway/README.md)
 
 ---
 
 ### Lobby Service
 
-**Purpose:** Manages lobbies, participants, and role assignments for collaborative measurement sessions.
+Manages **lobbies** and coordinates **synchronized multi-device measurements**.
 
-**Features:**
-- Create and manage measurement lobbies
-- Participant join/leave tracking
-- Role assignment (microphone, speaker)
-- Event log for lobby activity
-- Measurement session state management
+| Feature | Description |
+|---------|-------------|
+| Lobby CRUD | Create/join/leave with unique 6-char codes |
+| Participants | Track devices and their speaker/microphone roles |
+| Measurement Protocol | 11-step synchronized measurement coordination |
+| Broadcasts | Push lobby updates to all participants |
 
-**API Endpoints:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/lobbies` | Create a new lobby |
-| `POST` | `/lobbies/join` | Join a lobby by code |
-| `GET` | `/lobbies/{lobby_id}` | Get lobby details |
-| `POST` | `/lobbies/{lobby_id}/leave` | Leave a lobby |
-| `POST` | `/lobbies/{lobby_id}/roles` | Assign participant role |
-| `POST` | `/lobbies/{lobby_id}/start` | Start measurement |
-| `GET` | `/lobbies/{lobby_id}/events` | Get lobby events |
+**Key Events:**
+- `lobby.create`, `lobby.join`, `lobby.leave`
+- `role.assign` (speaker/microphone)
+- `measurement.create_session`, `measurement.ready`, `measurement.playback_complete`
 
-**Gateway Events:**
-- `lobby.create` - Create a new lobby
-- `lobby.join` - Join a lobby (requires `code`)
-- `lobby.leave` - Leave a lobby (requires `lobby_id`)
-- `lobby.get` - Get lobby info (requires `lobby_id` or `code`)
-- `lobby.start` - Start measurement session
-- `role.assign` - Assign role to participant
-
-**Environment Variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | `sqlite+aiosqlite:///./lobby.db` | Database connection string |
-| `SERVICE_NAME` | `lobby` | Service identifier |
+[📖 Full Documentation](lobby/README.md)
 
 ---
 
 ### Measurement Service
 
-**Purpose:** Handles audio file processing, impulse response analysis, and acoustic metric calculations.
+Handles **audio signal generation** and **acoustic analysis**.
 
-**Features:**
-- Audio file upload and management
-- Impulse response extraction via sweep deconvolution
-- Acoustic metrics: RT60, EDT, C50, C80, D50, DRR
-- Speech Transmission Index (STI) calculation
-- Frequency response analysis
+| Feature | Description |
+|---------|-------------|
+| Audio Generation | Logarithmic sine sweep with sync chirps |
+| Job Management | Create jobs, upload files, run analysis |
+| Analysis | RT60, EDT, C50/C80, DRR, STI calculation |
+| Alignment | Chirp detection for recording alignment |
 
-**API Endpoints:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/v1/health` | Health check |
-| `POST` | `/v1/jobs` | Create analysis job |
-| `GET` | `/v1/jobs/{job_id}` | Get job details |
-| `POST` | `/v1/jobs/{job_id}/uploads/{name}` | Upload audio file |
-| `POST` | `/v1/jobs/{job_id}/analyze` | Run analysis |
+**Key Endpoints:**
+- `GET /v1/measurement/audio` - Download measurement signal
+- `POST /v1/jobs/{id}/uploads/{name}` - Upload recording
+- `POST /v1/jobs/{id}/analyze` - Run analysis
 
-**Gateway Events:**
-- `measurement.create_job` - Create a new measurement job
-- `measurement.get_job` - Get job details
-- `analysis.run` - Run analysis on uploaded data
-
-**Analysis Sources:**
-- `impulse_response` - Direct IR file upload
-- `sweep_deconvolution` - Extract IR from sweep recording
-
-**Environment Variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `MEASUREMENT_DATA_DIR` | `/data` | Data storage directory |
-| `MEASUREMENT_MAX_UPLOAD_MB` | `50` | Maximum upload size |
-| `HOST` | `0.0.0.0` | Server host |
-| `PORT` | `8000` | Server port |
+[📖 Full Documentation](measurement/README.md)
 
 ---
 
 ### Simulation Service
 
-**Purpose:** Performs room acoustics simulations using pyroomacoustics for RIR generation and metric prediction.
+Performs **room acoustics simulation** using pyroomacoustics.
 
-**Features:**
-- Shoebox and polygon room geometry support
-- Multi-source, multi-microphone configurations
-- Wall material absorption/scattering coefficients
-- Room impulse response (RIR) generation
-- Acoustic metrics: RT60, EDT, C50, C80, D50, DRR, STI
+| Feature | Description |
+|---------|-------------|
+| Room Types | Shoebox (rectangular) or polygon geometry |
+| Simulation Methods | Image Source Method (fast) or Ray Tracing (accurate) |
+| Materials | Database of absorption/scattering coefficients |
+| Output | RT60, EDT, C50/C80, DRR, STI for each source-receiver pair |
 
-**API Endpoints:**
-| Method | Endpoint | Description |
-|--------|----------|-------------|
-| `GET` | `/health` | Health check |
-| `POST` | `/simulate` | Run simulation |
+**Key Endpoints:**
+- `POST /simulate` - Run room simulation
+- `GET /materials` - Get available materials
+- `GET /reference-profiles` - Get standard room profiles
 
-**Gateway Events:**
-- `simulation.run` - Run room acoustics simulation
-- `simulation.health` - Check service health
-
-**Room Types:**
-- `shoebox` - Rectangular room with per-wall materials
-- `polygon` - Arbitrary 2D polygon extruded to height
-
-**Environment Variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `PORT` | `8000` | Server port |
+[📖 Full Documentation](simulation/README.md)
 
 ---
 
 ### Storage Service
 
-**Purpose:** Persistent data storage API with PostgreSQL backend and Alembic migrations.
+**Persistent data layer** with PostgreSQL backend.
 
-**Features:**
-- Device registration and management
-- Lobby persistence
-- Measurement data storage
-- Analysis output storage
-- Simulation job tracking
+| Entity | Description |
+|--------|-------------|
+| Devices | Registered client devices |
+| Lobbies | Measurement session containers |
+| Participants | Device-lobby associations |
+| Measurements | Raw measurement metadata |
+| Analysis Outputs | Computed acoustic metrics |
+| Simulation Jobs/Results | Simulation requests and outputs |
 
-**API Endpoints (v1):**
-| Resource | Operations |
-|----------|------------|
-| `/v1/devices` | CRUD |
-| `/v1/lobbies` | CRUD + by-code lookup |
-| `/v1/participants` | CRUD |
-| `/v1/measurements` | CRUD |
-| `/v1/analysis_outputs` | CRUD |
-| `/v1/simulation_jobs` | CRUD |
-| `/v1/simulation_results` | CRUD |
+**All endpoints:** `GET`, `POST`, `PATCH`, `DELETE` for CRUD operations.
 
-**Environment Variables:**
-| Variable | Default | Description |
-|----------|---------|-------------|
-| `DATABASE_URL` | - | PostgreSQL connection string (required) |
-| `RUN_MIGRATIONS` | `true` | Run Alembic migrations on startup |
-| `LOG_LEVEL` | `INFO` | Logging level |
-
----
-
-## Requirements
-
-### System Requirements
-- Docker 20.10+ with Docker Compose v2
-- 4GB+ RAM recommended
-- 10GB+ disk space for data storage
-
-### Per-Service Python Dependencies
-
-#### Gateway
-```
-fastapi>=0.110
-uvicorn[standard]>=0.27
-httpx>=0.27
-pydantic>=2.6
-```
-
-#### Lobby
-```
-fastapi==0.115.6
-uvicorn[standard]==0.32.1
-SQLAlchemy[asyncio]==2.0.36
-asyncpg==0.30.0
-aiosqlite==0.20.0
-pydantic-settings==2.6.1
-```
-
-#### Measurement
-```
-fastapi==0.115.6
-uvicorn[standard]==0.32.1
-pydantic==2.10.3
-pydantic-settings==2.6.1
-numpy==2.1.3
-scipy==1.14.1
-soundfile==0.12.1
-python-multipart==0.0.20
-```
-
-#### Simulation
-```
-fastapi==0.115.6
-uvicorn[standard]==0.32.1
-pydantic==2.10.3
-numpy==1.26.4
-scipy==1.11.4
-pyroomacoustics==0.7.7
-```
-
-#### Storage
-```
-fastapi==0.115.6
-uvicorn[standard]==0.32.1
-pydantic==2.10.3
-pydantic-settings==2.6.1
-SQLAlchemy==2.0.36
-asyncpg==0.30.0
-psycopg2-binary==2.9.10
-alembic==1.14.0
-orjson==3.10.12
-python-json-logger==2.0.7
-```
+[📖 Full Documentation](storage/README.md)
 
 ---
 
 ## Getting Started
 
+### Prerequisites
+
+- **Docker** 20.10+ with Docker Compose v2
+- **4GB+ RAM** recommended
+- **10GB+ disk** for measurement data
+
 ### Quick Start with Docker Compose
 
-1. **Clone the repository:**
-   ```bash
-   git clone <repository-url>
-   cd sonalyze_backend
-   ```
-
-2. **Start all services:**
-   ```bash
-   docker compose up -d
-   ```
-
-3. **Check service health:**
-   ```bash
-   # Gateway
-   curl http://localhost:8000/healthz
-   
-   # Lobby
-   curl http://localhost:8001/health
-   
-   # Measurement
-   curl http://localhost:8002/v1/health
-   
-   # Simulation
-   curl http://localhost:8003/health
-   
-   # Storage
-   curl http://localhost:8004/healthz
-   ```
-
-4. **View logs:**
-   ```bash
-   docker compose logs -f
-   ```
-
-5. **Stop all services:**
-   ```bash
-   docker compose down
-   ```
-
-### Debugging With Fresh Containers
-
-Use the following chain when you need to blow away every image layer, rebuild, and stream all logs right in the foreground (no `-d`). It turns on unbuffered Python output and asks any service that respects `LOG_LEVEL` to switch to verbose logging:
-
 ```bash
-docker compose down --remove-orphans && \
-DOCKER_BUILDKIT=1 docker compose build --no-cache && \
-PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --force-recreate --remove-orphans
+# Clone the repository
+git clone <repository-url>
+cd sonalyze_backend
+
+# Start all services
+docker compose up -d
+
+# Check health
+curl http://localhost:8000/healthz  # Gateway
+curl http://localhost:8001/health   # Lobby (via internal network)
+
+# View logs
+docker compose logs -f
+
+# Stop all services
+docker compose down
 ```
 
-To laser-focus on a single microservice while the rest keep running, leave the stack up in another terminal (for example via `docker compose up -d`) and rerun just the service you care about with rebuilt layers and live logs:
+### Service Ports
 
-```bash
-PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --build --force-recreate --no-deps simulation
-```
+| Service | Internal Port | External Port |
+|---------|---------------|---------------|
+| Gateway | 8000 | **8000** (exposed) |
+| Lobby | 8000 | - |
+| Measurement | 8000 | - |
+| Simulation | 8000 | - |
+| Storage | 8000 | - |
+| PostgreSQL | 5432 | - |
+| PostgreSQL (Lobby) | 5432 | - |
 
-Swap `simulation` for any other service name (gateway, measurement, storage, etc.) to tail that component in isolation while the rest of the system keeps serving traffic as usual.
+> **Note:** Only the Gateway is exposed externally. All other services communicate via the Docker network.
 
-### Running Individual Services
-
-Each service can be run independently for development:
+### Running Individual Services (Development)
 
 ```bash
 # Gateway
@@ -357,15 +274,15 @@ cd gateway
 pip install -r requirements.txt
 uvicorn gateway.main:app --reload --port 8000
 
-# Lobby (requires DATABASE_URL)
+# Lobby (with SQLite for dev)
 cd lobby
 pip install -r requirements.txt
-DATABASE_URL=sqlite+aiosqlite:///./lobby.db uvicorn main:app --app-dir src --reload --port 8001
+uvicorn src.main:app --reload --port 8001
 
 # Measurement
 cd measurement
 pip install -r requirements.txt
-python -m app.main
+MEASUREMENT_DATA_DIR=./data uvicorn app.main:app --reload --port 8002
 
 # Simulation
 cd simulation
@@ -375,29 +292,43 @@ uvicorn sonalyze_simulation.main:app --reload --port 8003
 # Storage (requires PostgreSQL)
 cd storage
 pip install -r requirements.txt
-DATABASE_URL=postgresql+asyncpg://user:pass@localhost/sonalyze uvicorn app.main:app --app-dir src --reload --port 8004
+DATABASE_URL=postgresql+asyncpg://user:pass@localhost/sonalyze \
+uvicorn app.main:app --app-dir src --reload --port 8004
+```
+
+### Debug Mode
+
+For debugging with fresh containers and verbose logging:
+
+```bash
+docker compose down --remove-orphans && \
+DOCKER_BUILDKIT=1 docker compose build --no-cache && \
+PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --force-recreate --remove-orphans
+```
+
+To rebuild and restart a single service:
+
+```bash
+PYTHONUNBUFFERED=1 LOG_LEVEL=DEBUG docker compose up --build --force-recreate --no-deps simulation
 ```
 
 ---
 
-## WebSocket API
+## WebSocket Protocol
 
 ### Connection
 
-Connect to the gateway WebSocket endpoint:
-```
-ws://localhost:8000/ws?device_id=<your-device-id>
-```
+```javascript
+// Connect with device_id
+const ws = new WebSocket('ws://localhost:8000/ws?device_id=my-device-123');
 
-Or connect without device_id and send an `identify` message:
-```json
-{
-  "event": "identify",
-  "request_id": "req-1",
-  "data": {
-    "device_id": "your-device-id"
-  }
-}
+// Or connect and identify
+const ws = new WebSocket('ws://localhost:8000/ws');
+ws.send(JSON.stringify({
+  event: 'identify',
+  request_id: 'req-1',
+  data: { device_id: 'my-device-123' }
+}));
 ```
 
 ### Message Format
@@ -406,7 +337,7 @@ Or connect without device_id and send an `identify` message:
 ```json
 {
   "event": "lobby.create",
-  "request_id": "optional-request-id",
+  "request_id": "req-123",
   "data": {}
 }
 ```
@@ -416,22 +347,24 @@ Or connect without device_id and send an `identify` message:
 {
   "type": "response",
   "event": "lobby.create",
-  "request_id": "optional-request-id",
+  "request_id": "req-123",
   "data": {
-    "lobby_id": "...",
-    "code": "ABC123"
+    "lobby_id": "abc-def",
+    "code": "ABC123",
+    "state": "open"
   }
 }
 ```
 
-**Server → Client (Event):**
+**Server → Client (Push Event):**
 ```json
 {
   "type": "event",
-  "event": "participant.joined",
+  "event": "lobby.updated",
   "data": {
-    "device_id": "...",
-    "lobby_id": "..."
+    "type": "participant_joined",
+    "device_id": "other-device",
+    "lobby_id": "abc-def"
   }
 }
 ```
@@ -441,37 +374,87 @@ Or connect without device_id and send an `identify` message:
 {
   "type": "error",
   "event": "lobby.create",
-  "request_id": "optional-request-id",
+  "request_id": "req-123",
   "error": {
-    "code": "error_code",
-    "message": "Human readable message",
-    "details": {}
+    "code": "bad_request",
+    "message": "Missing required field"
   }
 }
 ```
+
+### Event Reference
+
+| Event | Service | Description |
+|-------|---------|-------------|
+| `identify` | Gateway | Identify device |
+| `lobby.create` | Lobby | Create lobby |
+| `lobby.join` | Lobby | Join by code |
+| `lobby.leave` | Lobby | Leave lobby |
+| `lobby.get` | Lobby | Get lobby info |
+| `lobby.start` | Lobby | Start measurement |
+| `role.assign` | Lobby | Assign speaker/mic role |
+| `measurement.create_session` | Lobby | Create measurement session |
+| `measurement.start_speaker` | Lobby | Start speaker cycle |
+| `measurement.ready` | Lobby | Signal client ready |
+| `measurement.speaker_audio_ready` | Lobby | Speaker has audio |
+| `measurement.recording_started` | Lobby | Mic is recording |
+| `measurement.playback_complete` | Lobby | Speaker finished |
+| `measurement.recording_uploaded` | Lobby | Mic uploaded recording |
+| `measurement.create_job` | Measurement | Create analysis job |
+| `measurement.get_job` | Measurement | Get job data |
+| `analysis.run` | Measurement | Run acoustic analysis |
+| `simulation.run` | Simulation | Run room simulation |
 
 ---
 
 ## Environment Variables
 
-Create a `.env` file in the root directory for custom configuration:
+### docker-compose.yml Environment
+
+```yaml
+# Gateway
+LOBBY_URL: http://lobby:8000
+MEASUREMENT_URL: http://measurement:8000
+SIMULATION_URL: http://simulation:8000
+INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
+MAX_MESSAGE_BYTES: 65536
+RATE_LIMIT_RPS: 10.0
+RATE_LIMIT_BURST: 20
+HTTP_TIMEOUT_SECONDS: 30.0
+
+# Lobby
+DATABASE_URL: postgresql+asyncpg://lobby:lobby_secret@postgres-lobby:5432/lobby
+GATEWAY_URL: http://gateway:8000
+MEASUREMENT_URL: http://measurement:8000
+INTERNAL_AUTH_TOKEN: ${INTERNAL_AUTH_TOKEN:-sonalyze_internal_token}
+
+# Measurement
+MEASUREMENT_DATA_DIR: /data
+MEASUREMENT_MAX_UPLOAD_MB: 50
+
+# Storage
+DATABASE_URL: postgresql+asyncpg://sonalyze:sonalyze_secret@postgres:5432/sonalyze
+RUN_MIGRATIONS: "true"
+LOG_LEVEL: INFO
+```
+
+### Custom .env File
+
+Create a `.env` file in the project root:
 
 ```env
-# Authentication
-INTERNAL_AUTH_TOKEN=your-secure-token
+# Security
+INTERNAL_AUTH_TOKEN=your-secure-random-token
 
-# Database (for production)
+# PostgreSQL (Storage)
 POSTGRES_USER=sonalyze
 POSTGRES_PASSWORD=your-secure-password
 POSTGRES_DB=sonalyze
 
-# Gateway settings
-RATE_LIMIT_RPS=10.0
-RATE_LIMIT_BURST=20
-MAX_MESSAGE_BYTES=65536
-
-# Measurement settings
-MEASUREMENT_MAX_UPLOAD_MB=50
+# PostgreSQL (Lobby)
+POSTGRES_LOBBY_USER=lobby
+POSTGRES_LOBBY_PASSWORD=your-secure-password
+POSTGRES_LOBBY_DB=lobby
 ```
 
 ---
@@ -482,39 +465,193 @@ MEASUREMENT_MAX_UPLOAD_MB=50
 
 ```
 sonalyze_backend/
-├── docker-compose.yml      # Main orchestration file
-├── README.md
-├── gateway/                # Gateway service
+├── docker-compose.yml          # Service orchestration
+├── README.md                   # This file
+├── LICENSE
+├── PLAN.md
+│
+├── gateway/                    # Gateway Service
 │   ├── Dockerfile
+│   ├── README.md
 │   ├── requirements.txt
 │   └── src/gateway/
-├── lobby/                  # Lobby service
+│       ├── main.py             # FastAPI app, WebSocket, HTTP proxy
+│       ├── router.py           # Event routing logic
+│       ├── connection_manager.py
+│       ├── config.py
+│       ├── models.py
+│       ├── http_client.py
+│       └── rate_limit.py
+│
+├── lobby/                      # Lobby Service
 │   ├── Dockerfile
+│   ├── README.md
 │   ├── requirements.txt
 │   └── src/
-├── measurement/            # Measurement service
+│       ├── main.py             # FastAPI app, HTTP endpoints
+│       ├── gateway_handler.py  # WebSocket event handling
+│       ├── service.py          # Business logic
+│       ├── measurement_coordinator.py  # 11-step protocol
+│       ├── broadcast.py        # Gateway broadcast client
+│       ├── models.py           # SQLAlchemy models
+│       ├── schemas.py          # Pydantic schemas
+│       ├── db.py
+│       └── settings.py
+│
+├── measurement/                # Measurement Service
 │   ├── Dockerfile
+│   ├── README.md
 │   ├── requirements.txt
+│   ├── debug_audio/            # Debug audio files
 │   └── src/app/
-├── simulation/             # Simulation service
+│       ├── main.py
+│       ├── api/routes.py       # HTTP endpoints
+│       ├── gateway_handler.py  # WebSocket event handling
+│       ├── storage.py          # Job file storage
+│       ├── reference_store.py  # Signal reference storage
+│       ├── models.py
+│       ├── settings.py
+│       └── analysis/           # Audio processing
+│           ├── audio_generator.py
+│           ├── alignment.py
+│           ├── metrics.py
+│           ├── sti.py
+│           └── io.py
+│
+├── simulation/                 # Simulation Service
 │   ├── Dockerfile
+│   ├── README.md
 │   ├── requirements.txt
 │   └── src/sonalyze_simulation/
-└── storage/                # Storage service
-    ├── Dockerfile
-    ├── requirements.txt
-    └── src/
-        ├── alembic/        # Database migrations
-        └── app/
+│       ├── main.py
+│       ├── routes.py           # HTTP endpoints
+│       ├── gateway_handler.py  # WebSocket event handling
+│       ├── schemas.py
+│       ├── simulate.py         # ISM simulation
+│       ├── simulate_raytracing.py
+│       ├── materials.py
+│       ├── reference_profiles.py
+│       ├── payload_adapter.py
+│       └── acoustics/          # Acoustic calculations
+│           ├── pyroom.py
+│           └── metrics.py
+│
+├── storage/                    # Storage Service
+│   ├── Dockerfile
+│   ├── README.md
+│   ├── requirements.txt
+│   └── src/
+│       ├── alembic/            # Database migrations
+│       ├── alembic.ini
+│       ├── entrypoint.sh
+│       └── app/
+│           ├── main.py
+│           ├── db.py
+│           ├── models.py
+│           ├── schemas.py
+│           ├── settings.py
+│           ├── http_errors.py
+│           ├── utils.py
+│           └── routers/        # REST API endpoints
+│               ├── devices.py
+│               ├── lobbies.py
+│               ├── participants.py
+│               ├── measurements.py
+│               ├── analysis_outputs.py
+│               ├── simulation_jobs.py
+│               └── simulation_results.py
+│
+└── measurement_data/           # Persistent measurement data (volume)
 ```
 
-### Adding Database Migrations
+### Database Migrations (Storage)
 
 ```bash
 cd storage/src
-alembic revision -m "description"
-# Edit the generated migration file
+
+# Generate migration
+alembic revision --autogenerate -m "Add new column"
+
+# Apply migrations
 alembic upgrade head
+
+# Rollback
+alembic downgrade -1
+```
+
+### Testing
+
+```bash
+# Run all service tests
+docker compose exec lobby pytest
+docker compose exec measurement pytest
+docker compose exec simulation pytest
+docker compose exec storage pytest
+```
+
+---
+
+## API Quick Reference
+
+### Create a Measurement Session (Full Flow)
+
+```bash
+# 1. Connect WebSocket and create lobby
+ws://localhost:8000/ws?device_id=admin-device
+{"event": "lobby.create", "request_id": "1", "data": {}}
+# Response: {"type": "response", "event": "lobby.create", "data": {"lobby_id": "...", "code": "ABC123"}}
+
+# 2. Others join the lobby
+{"event": "lobby.join", "request_id": "2", "data": {"code": "ABC123"}}
+
+# 3. Assign roles
+{"event": "role.assign", "request_id": "3", "data": {
+  "lobby_id": "...",
+  "target_device_id": "speaker-device",
+  "role": "speaker",
+  "role_slot_id": "speaker_1"
+}}
+
+# 4. Create measurement job
+{"event": "measurement.create_job", "request_id": "4", "data": {
+  "map": {"room": {"vertices": [[0,0],[5,0],[5,4],[0,4]], "height_m": 2.5}},
+  "meta": {}
+}}
+# Response: {"data": {"job_id": "..."}}
+
+# 5. Create measurement session
+{"event": "measurement.create_session", "request_id": "5", "data": {
+  "job_id": "...",
+  "lobby_id": "...",
+  "speakers": [{"device_id": "speaker-device", "slot_id": "speaker_1"}],
+  "microphones": [{"device_id": "mic-device", "slot_id": "mic_1"}]
+}}
+
+# 6. Start measurement
+{"event": "measurement.start_speaker", "request_id": "6", "data": {"session_id": "..."}}
+# ... 11-step protocol proceeds automatically
+```
+
+### Run Simulation
+
+```bash
+curl -X POST http://localhost:8000/v1/simulation/simulate \
+  -H "Content-Type: application/json" \
+  -d '{
+    "room": {
+      "type": "shoebox",
+      "dimensions_m": [5.0, 4.0, 2.5],
+      "default_material": {"absorption": 0.2}
+    },
+    "sources": [{"id": "s1", "position_m": [2.5, 0.5, 1.2]}],
+    "microphones": [{"id": "m1", "position_m": [2.5, 3.5, 1.2]}]
+  }'
+```
+
+### Get Measurement Audio
+
+```bash
+curl "http://localhost:8000/v1/measurement/audio?sample_rate=48000" -o measurement.wav
 ```
 
 ---
