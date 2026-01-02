@@ -195,3 +195,141 @@ def deconvolve_sweep(recording: np.ndarray, sweep_ref: np.ndarray, eps: float = 
 
     # Trim to plausible IR length (recording length)
     return ir[: max(1, recording.size)]
+
+
+def build_display_metrics(
+    rt: dict,
+    clarity: dict,
+    drr: dict,
+    quality: dict,
+    sti: dict,
+) -> list[dict]:
+    """
+    Build a universal list of displayable metrics from analysis results.
+    
+    This format allows the frontend to render metrics dynamically without
+    needing to know about specific metric types in advance.
+    """
+    metrics = []
+    sort_order = 0
+    
+    # Reverberation metrics
+    if rt.get("rt60_s") is not None:
+        metrics.append({
+            "key": "rt60",
+            "label": "RT60",
+            "value": rt["rt60_s"],
+            "formatted_value": f"{rt['rt60_s']:.2f}",
+            "unit": "s",
+            "description": "Reverberation time (60 dB decay)",
+            "icon": "timer",
+            "category": "reverberation",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    if rt.get("edt_s") is not None:
+        metrics.append({
+            "key": "edt",
+            "label": "EDT",
+            "value": rt["edt_s"],
+            "formatted_value": f"{rt['edt_s']:.2f}",
+            "unit": "s",
+            "description": "Early decay time",
+            "icon": "speed",
+            "category": "reverberation",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    # STI
+    sti_value = sti.get("sti")
+    if sti_value is not None:
+        metrics.append({
+            "key": "sti",
+            "label": "STI",
+            "value": sti_value,
+            "formatted_value": f"{sti_value:.2f}",
+            "unit": "",
+            "description": "Speech transmission index",
+            "icon": "record_voice_over",
+            "category": "intelligibility",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    # Clarity metrics
+    if clarity.get("c50_db") is not None:
+        metrics.append({
+            "key": "c50",
+            "label": "C50",
+            "value": clarity["c50_db"],
+            "formatted_value": f"{clarity['c50_db']:.1f}",
+            "unit": "dB",
+            "description": "Clarity for speech",
+            "icon": "hearing",
+            "category": "clarity",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    if clarity.get("c80_db") is not None:
+        metrics.append({
+            "key": "c80",
+            "label": "C80",
+            "value": clarity["c80_db"],
+            "formatted_value": f"{clarity['c80_db']:.1f}",
+            "unit": "dB",
+            "description": "Clarity for music",
+            "icon": "music_note",
+            "category": "clarity",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    if clarity.get("d50") is not None:
+        d50_pct = clarity["d50"] * 100
+        metrics.append({
+            "key": "d50",
+            "label": "D50",
+            "value": clarity["d50"],
+            "formatted_value": f"{d50_pct:.0f}",
+            "unit": "%",
+            "description": "Definition (speech intelligibility)",
+            "icon": "graphic_eq",
+            "category": "clarity",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    # DRR
+    if drr.get("drr_db") is not None:
+        metrics.append({
+            "key": "drr",
+            "label": "DRR",
+            "value": drr["drr_db"],
+            "formatted_value": f"{drr['drr_db']:.1f}",
+            "unit": "dB",
+            "description": "Direct-to-reverberant ratio",
+            "icon": "surround_sound",
+            "category": "spatial",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    # Quality metrics
+    if quality.get("snr_db") is not None:
+        metrics.append({
+            "key": "snr",
+            "label": "SNR",
+            "value": quality["snr_db"],
+            "formatted_value": f"{quality['snr_db']:.1f}",
+            "unit": "dB",
+            "description": "Signal-to-noise ratio",
+            "icon": "signal_cellular_alt",
+            "category": "quality",
+            "sort_order": sort_order,
+        })
+        sort_order += 1
+    
+    return metrics

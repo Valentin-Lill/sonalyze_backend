@@ -25,6 +25,7 @@ from app.analysis.alignment import extract_sweep_for_deconvolution, AlignmentRes
 from app.analysis.audio_generator import MeasurementSignalConfig
 from app.analysis.io import normalize_peak, read_audio_mono
 from app.analysis.metrics import (
+    build_display_metrics,
     clarity_definition_metrics,
     deconvolve_sweep,
     drr_metrics,
@@ -304,14 +305,28 @@ def _handle_analysis_run(
     else:
         raise HTTPException(status_code=400, detail="Invalid source")
     
+    rt = rt_metrics_from_ir(ir, fs)
+    clarity = clarity_definition_metrics(ir, fs)
+    drr = drr_metrics(ir, fs)
+    quality = snr_quality(ir)
+    sti = sti_from_impulse_response(ir, fs)
+    
     results = {
         "samplerate_hz": fs,
-        "rt": rt_metrics_from_ir(ir, fs),
-        "clarity": clarity_definition_metrics(ir, fs),
-        "drr": drr_metrics(ir, fs),
-        "quality": snr_quality(ir),
+        "rt": rt,
+        "clarity": clarity,
+        "drr": drr,
+        "quality": quality,
         "frequency_response": freq_response_summary(ir, fs),
-        "sti": sti_from_impulse_response(ir, fs),
+        "sti": sti,
+        # Universal display format - frontend renders this dynamically
+        "display_metrics": build_display_metrics(
+            rt=rt,
+            clarity=clarity,
+            drr=drr,
+            quality=quality,
+            sti=sti,
+        ),
     }
     
     store.write_json(job_dir / "results" / "analysis.json", results)

@@ -21,6 +21,7 @@ from app.analysis.audio_generator import (
 from app.analysis.io import normalize_peak, read_audio_mono
 from app.reference_store import reference_store
 from app.analysis.metrics import (
+    build_display_metrics,
     clarity_definition_metrics,
     deconvolve_sweep,
     drr_metrics,
@@ -129,14 +130,29 @@ def analyze(job_id: str, req: AnalyzeRequest) -> AnalyzeResponse:
     else:
         raise HTTPException(status_code=400, detail="Invalid source")
 
+    rt = rt_metrics_from_ir(ir, fs)
+    clarity = clarity_definition_metrics(ir, fs)
+    drr = drr_metrics(ir, fs)
+    quality = snr_quality(ir)
+    freq_resp = freq_response_summary(ir, fs)
+    sti = sti_from_impulse_response(ir, fs)
+
     results = {
         "samplerate_hz": fs,
-        "rt": rt_metrics_from_ir(ir, fs),
-        "clarity": clarity_definition_metrics(ir, fs),
-        "drr": drr_metrics(ir, fs),
-        "quality": snr_quality(ir),
-        "frequency_response": freq_response_summary(ir, fs),
-        "sti": sti_from_impulse_response(ir, fs),
+        "rt": rt,
+        "clarity": clarity,
+        "drr": drr,
+        "quality": quality,
+        "frequency_response": freq_resp,
+        "sti": sti,
+        # Universal display format - frontend renders this dynamically
+        "display_metrics": build_display_metrics(
+            rt=rt,
+            clarity=clarity,
+            drr=drr,
+            quality=quality,
+            sti=sti,
+        ),
     }
 
     store.write_json(job_dir / "results" / "analysis.json", results)
