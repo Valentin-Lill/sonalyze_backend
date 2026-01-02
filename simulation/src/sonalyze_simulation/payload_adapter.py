@@ -39,6 +39,7 @@ class _RoomConversion:
     bounds: _RoomBounds
     furniture: list[dict[str, Any]]
     polygon: list[list[float]]
+    raw_furniture: list[dict[str, Any]]  # Original furniture data for ray tracing
 
 
 def normalize_simulation_payload(payload: dict[str, Any]) -> dict[str, Any]:
@@ -55,6 +56,7 @@ def normalize_simulation_payload(payload: dict[str, Any]) -> dict[str, Any]:
     converted: dict[str, Any] = {
         "room": geometry.room_spec,
         "furniture": geometry.furniture,
+        "raw_furniture": geometry.raw_furniture,  # For ray tracing with rotation
         "sample_rate_hz": _coerce_int(
             payload.get("sample_rate_hz") or room_model_data.get("sample_rate_hz"),
             default=16000,
@@ -179,12 +181,18 @@ def _convert_room_model(room_model: dict[str, Any]) -> _RoomConversion:
         "ceiling_material": ceiling_material,
     }
 
-    furniture = _convert_furniture_boxes(room.get("furniture"), room_height=height)
+    # Get raw furniture for ray tracing (preserves rotation/dimensions)
+    raw_furniture_data = room.get("furniture", [])
+    if not isinstance(raw_furniture_data, list):
+        raw_furniture_data = []
+
+    furniture = _convert_furniture_boxes(raw_furniture_data, room_height=height)
     return _RoomConversion(
         room_spec=room_spec,
         bounds=bounds,
         furniture=furniture,
         polygon=polygon,
+        raw_furniture=raw_furniture_data,
     )
 
 

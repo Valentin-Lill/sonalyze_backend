@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
 import numpy as np
 
@@ -28,7 +29,41 @@ def _to_point(v: list[float]) -> _Point:
     return _Point(float(v[0]), float(v[1]), float(v[2]))
 
 
-def run_simulation(request: SimulationRequest) -> SimulationResponse:
+def run_simulation(
+    request: SimulationRequest,
+    raw_furniture: list[dict[str, Any]] | None = None,
+    use_raytracing: bool = False,
+) -> SimulationResponse:
+    """
+    Run acoustic simulation.
+    
+    If use_raytracing is True, or if furniture is present (either in 
+    request.furniture or raw_furniture), uses ray tracing mode for 
+    accurate furniture modeling. Otherwise uses the faster Image Source 
+    Method (ISM).
+    
+    Args:
+        request: Simulation request with room, sources, microphones
+        raw_furniture: Optional raw furniture data from frontend with rotation info
+        use_raytracing: Force ray tracing mode even without furniture (experimental)
+        
+    Returns:
+        SimulationResponse with acoustic metrics
+    """
+    # Check if we have furniture to model or raytracing is explicitly requested
+    has_furniture = bool(request.furniture) or bool(raw_furniture)
+    
+    if use_raytracing or has_furniture:
+        # Use ray tracing simulation for furniture support
+        from sonalyze_simulation.simulate_raytracing import run_raytracing_simulation
+        return run_raytracing_simulation(request, furniture_data=raw_furniture)
+    
+    # No furniture - use standard ISM simulation
+    return _run_ism_simulation(request)
+
+
+def _run_ism_simulation(request: SimulationRequest) -> SimulationResponse:
+    """Run standard Image Source Method simulation (no furniture)."""
     fs = int(request.sample_rate_hz)
     room, build_warnings = build_room(
         request.room,
@@ -37,11 +72,8 @@ def run_simulation(request: SimulationRequest) -> SimulationResponse:
         air_absorption=bool(request.air_absorption),
     )
 
-    ignored_furniture = []
-    if request.furniture:
-        ignored_furniture.append(
-            "Furniture is accepted in the API but is not yet modeled in pyroomacoustics setup; it is ignored for now."
-        )
+    # No furniture in ISM mode
+    warnings: list[str] = list(build_warnings)
 
     sources = [(_s.id, _to_point(_s.position_m)) for _s in request.sources]
     microphones = [(_m.id, _to_point(_m.position_m)) for _m in request.microphones]
@@ -95,5 +127,5 @@ def run_simulation(request: SimulationRequest) -> SimulationResponse:
     return SimulationResponse(
         sample_rate_hz=fs,
         pairs=pair_results,
-        warnings=[*build_warnings, *ignored_furniture],
+        warnings=warnings,
     )

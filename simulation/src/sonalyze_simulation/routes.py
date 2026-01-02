@@ -28,10 +28,14 @@ def health() -> dict:
 def simulate(raw_request: dict[str, Any] = Body(...)) -> SimulationResponse:
     try:
         normalized = normalize_simulation_payload(raw_request)
+        # Extract raw furniture data for ray tracing (preserves rotation)
+        raw_furniture = normalized.pop("raw_furniture", None)
+        # Extract use_raytracing flag for experimental raytracing mode
+        use_raytracing = bool(raw_request.get("use_raytracing", False))
         request = SimulationRequest.model_validate(normalized)
     except (ValidationError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=f"Invalid simulation request: {exc}") from exc
-    return run_simulation(request)
+    return run_simulation(request, raw_furniture=raw_furniture, use_raytracing=use_raytracing)
 
 
 @router.get("/reference-profiles", response_model=RoomReferenceProfilesResponse)
