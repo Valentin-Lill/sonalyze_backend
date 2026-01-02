@@ -164,13 +164,19 @@ def _convert_room_model(room_model: dict[str, Any]) -> _RoomConversion:
     max_y = max(pt[1] for pt in polygon)
     bounds = _RoomBounds(min_x=min_x, max_x=max_x, min_y=min_y, max_y=max_y, height=height)
 
+    # Extract materials from room_model or use defaults
+    materials_data = room_model.get("materials") or room.get("materials") or {}
+    wall_material = _extract_material_spec(materials_data.get("wall"))
+    floor_material = _extract_material_spec(materials_data.get("floor"))
+    ceiling_material = _extract_material_spec(materials_data.get("ceiling"))
+
     room_spec: dict[str, Any] = {
         "type": "polygon",
         "corners_m": polygon,
         "height_m": height,
-        "wall_material": {"absorption": 0.2, "scattering": 0.0},
-        "floor_material": {"absorption": 0.05, "scattering": 0.0},
-        "ceiling_material": {"absorption": 0.2, "scattering": 0.0},
+        "wall_material": wall_material,
+        "floor_material": floor_material,
+        "ceiling_material": ceiling_material,
     }
 
     furniture = _convert_furniture_boxes(room.get("furniture"), room_height=height)
@@ -180,6 +186,42 @@ def _convert_room_model(room_model: dict[str, Any]) -> _RoomConversion:
         furniture=furniture,
         polygon=polygon,
     )
+
+
+def _extract_material_spec(material_data: Any) -> dict[str, float]:
+    """Extract material spec from material data (either ID or direct coefficients)."""
+    from sonalyze_simulation.materials import get_material_by_id
+
+    default_spec = {"absorption": 0.2, "scattering": 0.05}
+
+    if material_data is None:
+        return default_spec
+
+    # If it's a string, treat it as a material ID
+    if isinstance(material_data, str):
+        material = get_material_by_id(material_data)
+        if material:
+            return {"absorption": material.absorption, "scattering": material.scattering}
+        return default_spec
+
+    # If it's a dict, check for material_id or direct coefficients
+    if isinstance(material_data, dict):
+        material_id = material_data.get("material_id") or material_data.get("id")
+        if material_id:
+            material = get_material_by_id(material_id)
+            if material:
+                return {"absorption": material.absorption, "scattering": material.scattering}
+
+        # Fall back to direct coefficients if provided
+        absorption = material_data.get("absorption")
+        scattering = material_data.get("scattering", 0.0)
+        if absorption is not None:
+            return {
+                "absorption": float(absorption),
+                "scattering": float(scattering),
+            }
+
+    return default_spec
 
 
 def _collect_segments(walls: Any) -> list[tuple[list[float], list[float]]]:

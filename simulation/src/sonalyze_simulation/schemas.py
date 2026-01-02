@@ -129,3 +129,16 @@ class RoomReferenceProfile(BaseModel):
 
 class RoomReferenceProfilesResponse(BaseModel):
     profiles: list[RoomReferenceProfile]
+
+
+class MaterialInfoResponse(BaseModel):
+    """Single material with acoustic properties."""
+    id: str = Field(description="Unique identifier for the material")
+    display_name: str = Field(description="Human-friendly material name")
+    absorption: float = Field(ge=0.0, le=1.0, description="Absorption coefficient")
+    scattering: float = Field(ge=0.0, le=1.0, description="Scattering coefficient")
+
+
+class MaterialsResponse(BaseModel):
+    """Response containing all available materials."""
+    materials: list[MaterialInfoResponse]

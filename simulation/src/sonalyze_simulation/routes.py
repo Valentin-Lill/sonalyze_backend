@@ -6,6 +6,7 @@ from fastapi import APIRouter, Body, HTTPException
 from pydantic import ValidationError
 
 from sonalyze_simulation.schemas import (
+    MaterialsResponse,
     RoomReferenceProfilesResponse,
     SimulationRequest,
     SimulationResponse,
@@ -13,6 +14,7 @@ from sonalyze_simulation.schemas import (
 from sonalyze_simulation.simulate import run_simulation
 from sonalyze_simulation.payload_adapter import normalize_simulation_payload
 from sonalyze_simulation.reference_profiles import get_reference_profiles
+from sonalyze_simulation.materials import get_all_materials
 
 router = APIRouter()
 
@@ -36,3 +38,20 @@ def simulate(raw_request: dict[str, Any] = Body(...)) -> SimulationResponse:
 def reference_profiles() -> RoomReferenceProfilesResponse:
     profiles = get_reference_profiles()
     return RoomReferenceProfilesResponse(profiles=profiles)
+
+
+@router.get("/materials", response_model=MaterialsResponse)
+def materials() -> MaterialsResponse:
+    """Return all available acoustic materials for room simulation."""
+    all_materials = get_all_materials()
+    return MaterialsResponse(
+        materials=[
+            {
+                "id": m.id,
+                "display_name": m.display_name,
+                "absorption": m.absorption,
+                "scattering": m.scattering,
+            }
+            for m in all_materials
+        ]
+    )
