@@ -638,6 +638,7 @@ async def recording_uploaded(
                     "session_id": session_id,
                     "job_id": session.job_id,
                     "completed_speakers": session.completed_measurements,
+                    "audio_hash": measurement.audio_hash,
                 },
                 session_id=session_id,
             )
@@ -646,6 +647,7 @@ async def recording_uploaded(
                 "session_id": session_id,
                 "status": "session_complete",
                 "completed_speakers": session.completed_measurements,
+                "audio_hash": measurement.audio_hash,
             }
     
     return {
