@@ -153,6 +153,8 @@ def get_measurement_audio(
     session_id: str | None = Query(default=None, description="Session ID for tracking"),
     sample_rate: int = Query(default=48000, ge=8000, le=192000, description="Sample rate in Hz"),
     format: str = Query(default="wav", description="Audio format: wav or flac"),
+    sweep_f_start: float = Query(default=20.0, ge=20.0, le=20000.0, description="Sweep start frequency in Hz"),
+    sweep_f_end: float = Query(default=20000.0, ge=20.0, le=20000.0, description="Sweep end frequency in Hz"),
 ) -> Response:
     """
     Get the measurement audio file.
@@ -160,14 +162,25 @@ def get_measurement_audio(
     Returns a WAV or FLAC file containing the measurement signal:
     - 0.0s - 0.5s: Sync Chirp (2kHz - 10kHz)
     - 0.5s - 2.5s: Silence
-    - 2.5s - 12.5s: Measurement Sweep (20Hz - 20kHz)
+    - 2.5s - 12.5s: Measurement Sweep (configurable frequency range)
     - 12.5s - 14.5s: Silence (reverb tail)
     - 14.5s - 15.0s: Sync Chirp
     
     The chirp and sweep signals are stored for later use during analysis,
     keyed by the audio hash returned in X-Audio-Hash header.
+    
+    Query parameters:
+    - sweep_f_start: Start frequency of the measurement sweep (default: 20 Hz)
+    - sweep_f_end: End frequency of the measurement sweep (default: 20000 Hz)
+    
+    For smartphone measurements, use sweep_f_start=200 and sweep_f_end=12000
+    to stay within the typical smartphone speaker/microphone range.
     """
-    config = MeasurementSignalConfig(sample_rate=sample_rate)
+    config = MeasurementSignalConfig(
+        sample_rate=sample_rate,
+        sweep_f_start=sweep_f_start,
+        sweep_f_end=sweep_f_end,
+    )
     
     if format.lower() == "flac":
         audio_format = "FLAC"
@@ -254,6 +267,8 @@ def get_measurement_audio(
 @router.get("/measurement/audio/info")
 def get_measurement_audio_info(
     sample_rate: int = Query(default=48000, ge=8000, le=192000, description="Sample rate in Hz"),
+    sweep_f_start: float = Query(default=20.0, ge=20.0, le=20000.0, description="Sweep start frequency in Hz"),
+    sweep_f_end: float = Query(default=20000.0, ge=20.0, le=20000.0, description="Sweep end frequency in Hz"),
 ) -> dict:
     """
     Get timing information about the measurement signal.
@@ -262,5 +277,9 @@ def get_measurement_audio_info(
     Useful for clients to know when to start/stop recording and where the
     sync chirps are located.
     """
-    config = MeasurementSignalConfig(sample_rate=sample_rate)
+    config = MeasurementSignalConfig(
+        sample_rate=sample_rate,
+        sweep_f_start=sweep_f_start,
+        sweep_f_end=sweep_f_end,
+    )
     return get_signal_timing(config)

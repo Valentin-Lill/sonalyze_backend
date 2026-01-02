@@ -1,0 +1,17 @@
+{
+  "success": true,
+  "message": "Aligned audio: 576000 samples (12.00s) from original 741120 samples",
+  "original_length_samples": 741120,
+  "aligned_length_samples": 576000,
+  "sweep_start_sample": 141970,
+  "sweep_end_sample": 621970,
+  "audio_hash": "77a3982812f105477616ba789d4f2f1c6a412839fd423300f141732d1fa0a5e0",
+  "start_chirp": {
+    "detected": true,
+    "sample_index": 21970,
+    "time_seconds": 0.45770833333333333,
+    "correlation_peak": 0.49086407233710877,
+    "confidence": 1.0
+  },
+  "end_chirp": null
+}
