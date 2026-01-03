@@ -16,6 +16,7 @@ MEASUREMENT_SESSION_EVENTS = {
     "measurement.start_speaker",
     "measurement.session_status",
     "measurement.cancel_session",
+    "measurement.broadcast_results",
     "measurement.ready",
     "measurement.client_ready",
     "measurement.speaker_audio_ready",

@@ -140,6 +140,7 @@ All events are received via `POST /gateway/handle` from the Gateway service.
 | `measurement.start_speaker` | Start speaker cycle | `{session_id}` |
 | `measurement.session_status` | Get session status | `{session_id}` |
 | `measurement.cancel_session` | Cancel session | `{session_id, reason?}` |
+| `measurement.broadcast_results` | Broadcast analysis results | `{session_id, job_id, results}` |
 | `measurement.ready` | Client ready signal | `{session_id}` |
 | `measurement.speaker_audio_ready` | Speaker has audio | `{session_id, audio_hash?}` |
 | `measurement.recording_started` | Mic started recording | `{session_id}` |
@@ -156,14 +157,65 @@ The Lobby service broadcasts these events to clients via Gateway:
 | `lobby.updated` | Lobby state changed (participant join/leave, role change) |
 | `lobby.room_snapshot` | Room configuration shared |
 | `measurement.start_measurement` | Measurement starting for speaker |
+| `measurement.phase_update` | **NEW:** Current measurement phase/step changed |
 | `measurement.request_audio` | Speaker should download audio |
 | `measurement.start_recording` | Microphones should start recording |
 | `measurement.start_playback` | Speaker should play audio |
 | `measurement.stop_recording` | Microphones should stop and upload |
 | `measurement.speaker_complete` | One speaker finished |
 | `measurement.session_complete` | All speakers finished |
+| `measurement.analysis_results` | **NEW:** Analysis results for all clients |
 | `measurement.session_cancelled` | Session was cancelled |
 | `measurement.error` | Error occurred |
+
+### Phase Update Event
+
+The `measurement.phase_update` event is broadcast to ALL session participants whenever the measurement phase changes. This ensures all clients (not just the admin) can track progress through the measurement timeline.
+
+**Event Data:**
+```json
+{
+  "session_id": "uuid",
+  "job_id": "uuid",
+  "phase": "playing",
+  "phase_description": "Playing measurement signal",
+  "current_speaker_index": 0,
+  "total_speakers": 1,
+  "completed_speakers": 0
+}
+```
+
+**Phase Values:**
+- `idle`, `initiating`, `notifying_clients`, `waiting_ready`
+- `speaker_downloading`, `speaker_ready`, `starting_recording`
+- `recording`, `playing`, `playback_complete`
+- `uploading`, `processing`, `completed`, `failed`
+
+### Analysis Results Broadcast
+
+The `measurement.analysis_results` event is broadcast to ALL session participants when analysis completes. This ensures all clients receive the measurement results, not just the admin who requested the analysis.
+
+**Event Data:**
+```json
+{
+  "session_id": "uuid",
+  "job_id": "uuid",
+  "results": {
+    "samplerate_hz": 48000,
+    "display_metrics": [
+      {
+        "key": "rt60",
+        "label": "RT60",
+        "value": 1.23,
+        "formatted_value": "1.23",
+        "unit": "s",
+        "description": "Reverberation time",
+        "sort_order": 0
+      }
+    ]
+  }
+}
+```
 
 ## Database Models
 

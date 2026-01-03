@@ -12,6 +12,8 @@ from db import get_session
 from models import ParticipantRole
 from service import (
     assign_role,
+    broadcast_profile_update,
+    broadcast_step_update,
     create_lobby,
     get_lobby_by_code,
     get_lobby_by_id,
@@ -23,6 +25,7 @@ from service import (
 )
 from schemas import ParticipantOut
 from measurement_coordinator import (
+    broadcast_analysis_results,
     cancel_session,
     client_ready,
     create_session,
@@ -277,8 +280,74 @@ async def _handle_lobby_room_snapshot(
         raise HTTPException(status_code=400, detail=str(exc))
 
 
-# =============================================================================
-# Measurement Session Coordination Handlers
+async def _handle_lobby_step_update(
+    client: GatewayClientInfo,
+    data: dict[str, Any],
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Handle lobby.step_update event.
+    
+    Broadcasts the current timeline step to all lobby participants.
+    This keeps all clients synchronized on the measurement timeline.
+    """
+    lobby_id = data.get("lobby_id")
+    step_index = data.get("step_index")
+    
+    if not lobby_id:
+        raise HTTPException(status_code=400, detail="Missing 'lobby_id' in data")
+    if step_index is None:
+        raise HTTPException(status_code=400, detail="Missing 'step_index' in data")
+    
+    lobby = await get_lobby_by_id(session, lobby_id)
+    if lobby is None:
+        raise HTTPException(status_code=404, detail="Lobby not found")
+    
+    try:
+        await broadcast_step_update(
+            session,
+            lobby=lobby,
+            admin_device_id=client.device_id,
+            step_index=step_index,
+        )
+        return {"ok": True, "step_index": step_index}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
+async def _handle_lobby_profile_update(
+    client: GatewayClientInfo,
+    data: dict[str, Any],
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """Handle lobby.profile_update event.
+    
+    Broadcasts the current measurement profile to all lobby participants.
+    This keeps all clients synchronized on the measurement profile (smartphone/high-end).
+    """
+    lobby_id = data.get("lobby_id")
+    profile_id = data.get("profile_id")
+    
+    if not lobby_id:
+        raise HTTPException(status_code=400, detail="Missing 'lobby_id' in data")
+    if not profile_id:
+        raise HTTPException(status_code=400, detail="Missing 'profile_id' in data")
+    
+    lobby = await get_lobby_by_id(session, lobby_id)
+    if lobby is None:
+        raise HTTPException(status_code=404, detail="Lobby not found")
+    
+    try:
+        await broadcast_profile_update(
+            session,
+            lobby=lobby,
+            admin_device_id=client.device_id,
+            profile_id=profile_id,
+        )
+        return {"ok": True, "profile_id": profile_id}
+    except PermissionError as exc:
+        raise HTTPException(status_code=403, detail=str(exc))
+
+
 # =============================================================================
 
 async def _handle_measurement_create_session(
@@ -565,6 +634,34 @@ async def _handle_measurement_cancel_session(
         raise HTTPException(status_code=404, detail=str(e))
 
 
+async def _handle_measurement_broadcast_results(
+    client: GatewayClientInfo,
+    data: dict[str, Any],
+    session: AsyncSession,
+) -> dict[str, Any]:
+    """
+    Handle measurement.broadcast_results event.
+    
+    Broadcasts analysis results to all session participants.
+    This is called by the admin after receiving analysis results.
+    """
+    session_id = data.get("session_id")
+    job_id = data.get("job_id")
+    results = data.get("results")
+    
+    if not session_id:
+        raise HTTPException(status_code=400, detail="Missing 'session_id' in data")
+    if not job_id:
+        raise HTTPException(status_code=400, detail="Missing 'job_id' in data")
+    if results is None:
+        raise HTTPException(status_code=400, detail="Missing 'results' in data")
+    
+    try:
+        return await broadcast_analysis_results(session_id, job_id, results)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
 # Event handlers mapping - all lobby and session management events
 EVENT_HANDLERS = {
     # Lobby events
@@ -573,6 +670,8 @@ EVENT_HANDLERS = {
     "lobby.leave": _handle_lobby_leave,
     "lobby.get": _handle_lobby_get,
     "lobby.start": _handle_lobby_start,
+    "lobby.step_update": _handle_lobby_step_update,
+    "lobby.profile_update": _handle_lobby_profile_update,
     "role.assign": _handle_role_assign,
     "lobby.room_snapshot": _handle_lobby_room_snapshot,
     
@@ -581,6 +680,7 @@ EVENT_HANDLERS = {
     "measurement.start_speaker": _handle_measurement_start_speaker,
     "measurement.session_status": _handle_measurement_session_status,
     "measurement.cancel_session": _handle_measurement_cancel_session,
+    "measurement.broadcast_results": _handle_measurement_broadcast_results,
     
     # Measurement protocol events (11-step)
     "measurement.ready": _handle_measurement_client_ready,

@@ -159,6 +159,64 @@ async def _broadcast_to_devices(
     await broadcast_to_devices(device_ids, event, data)
 
 
+async def _broadcast_phase_update(
+    session: MeasurementSession,
+    phase: MeasurementPhase,
+    extra_data: dict[str, Any] | None = None,
+) -> None:
+    """
+    Broadcast measurement phase update to ALL session participants.
+    
+    This ensures all clients (not just the admin) receive real-time updates
+    about which step of the measurement timeline they are on.
+    """
+    all_device_ids = (
+        [s.device_id for s in session.speakers] +
+        [m.device_id for m in session.microphones]
+    )
+    
+    data = {
+        "session_id": session.session_id,
+        "job_id": session.job_id,
+        "phase": phase.value,
+        "phase_description": _get_phase_description(phase),
+        "current_speaker_index": session.current_speaker_index,
+        "total_speakers": len(session.speakers),
+        "completed_speakers": len(session.completed_measurements),
+    }
+    
+    if extra_data:
+        data.update(extra_data)
+    
+    await _broadcast_to_devices(
+        all_device_ids,
+        "measurement.phase_update",
+        data,
+        session_id=session.session_id,
+    )
+
+
+def _get_phase_description(phase: MeasurementPhase) -> str:
+    """Get a human-readable description for a measurement phase."""
+    descriptions = {
+        MeasurementPhase.IDLE: "Idle - Waiting to start",
+        MeasurementPhase.INITIATING: "Initiating measurement",
+        MeasurementPhase.NOTIFYING_CLIENTS: "Notifying all devices",
+        MeasurementPhase.WAITING_READY: "Waiting for devices to be ready",
+        MeasurementPhase.SPEAKER_DOWNLOADING: "Speaker downloading audio",
+        MeasurementPhase.SPEAKER_READY: "Speaker ready to play",
+        MeasurementPhase.STARTING_RECORDING: "Starting recording on microphones",
+        MeasurementPhase.RECORDING: "Recording in progress",
+        MeasurementPhase.PLAYING: "Playing measurement signal",
+        MeasurementPhase.PLAYBACK_COMPLETE: "Playback complete",
+        MeasurementPhase.UPLOADING: "Uploading recordings",
+        MeasurementPhase.PROCESSING: "Processing recordings",
+        MeasurementPhase.COMPLETED: "Measurement complete",
+        MeasurementPhase.FAILED: "Measurement failed",
+    }
+    return descriptions.get(phase, phase.value)
+
+
 async def create_session(
     job_id: str,
     lobby_id: str,
@@ -296,6 +354,9 @@ async def start_measurement(session_id: str) -> dict[str, Any]:
     
     measurement.phase = MeasurementPhase.NOTIFYING_CLIENTS
     
+    # Broadcast phase update to all clients
+    await _broadcast_phase_update(session, measurement.phase)
+    
     return {
         "session_id": session_id,
         "status": "notifying_clients",
@@ -360,6 +421,10 @@ async def client_ready(
         # Step 4: Request audio from speaker
         # Use gateway_url for external clients to download audio through the gateway proxy
         measurement.phase = MeasurementPhase.SPEAKER_DOWNLOADING
+        
+        # Broadcast phase update to all clients
+        await _broadcast_phase_update(session, measurement.phase)
+        
         await _broadcast_to_devices(
             [measurement.speaker.device_id],
             "measurement.request_audio",
@@ -415,8 +480,15 @@ async def speaker_audio_ready(
     measurement.audio_hash = audio_hash
     measurement.phase = MeasurementPhase.SPEAKER_READY
     
+    # Broadcast phase update to all clients
+    await _broadcast_phase_update(session, measurement.phase)
+    
     # Step 6: Command all microphones to start recording
     measurement.phase = MeasurementPhase.STARTING_RECORDING
+    
+    # Broadcast phase update to all clients
+    await _broadcast_phase_update(session, measurement.phase)
+    
     mic_device_ids = [m.device_id for m in measurement.microphones]
     
     await _broadcast_to_devices(
@@ -479,6 +551,10 @@ async def recording_started(
         
         # Step 8: Command speaker to start playback
         measurement.phase = MeasurementPhase.PLAYING
+        
+        # Broadcast phase update to all clients
+        await _broadcast_phase_update(session, measurement.phase)
+        
         await _broadcast_to_devices(
             [measurement.speaker.device_id],
             "measurement.start_playback",
@@ -493,6 +569,16 @@ async def recording_started(
             "status": "all_recording",
             "action": "playback_commanded",
         }
+    
+    # Broadcast updated recording count to all clients
+    await _broadcast_phase_update(
+        session,
+        measurement.phase,
+        extra_data={
+            "recordings_started": started_count,
+            "total_microphones": total_count,
+        },
+    )
     
     return {
         "session_id": session_id,
@@ -530,9 +616,16 @@ async def playback_complete(
     measurement.speaker.is_finished = True
     measurement.phase = MeasurementPhase.PLAYBACK_COMPLETE
     
+    # Broadcast phase update to all clients
+    await _broadcast_phase_update(session, measurement.phase)
+    
     # Step 10: Command all microphones to stop recording and upload
     # Use gateway_url for external clients to upload recordings through the gateway proxy
     measurement.phase = MeasurementPhase.UPLOADING
+    
+    # Broadcast phase update to all clients
+    await _broadcast_phase_update(session, measurement.phase)
+    
     mic_device_ids = [m.device_id for m in measurement.microphones]
     
     await _broadcast_to_devices(
@@ -597,6 +690,9 @@ async def recording_uploaded(
         measurement.phase = MeasurementPhase.PROCESSING
         measurement.finished_at = datetime.utcnow()
         
+        # Broadcast phase update to all clients
+        await _broadcast_phase_update(session, measurement.phase)
+        
         # Add to completed measurements
         session.completed_measurements.append(measurement.speaker.slot_id)
         session.current_speaker_index += 1
@@ -630,6 +726,9 @@ async def recording_uploaded(
             measurement.phase = MeasurementPhase.COMPLETED
             
             logger.info(f"Measurement session {session_id} complete")
+            
+            # Broadcast phase update to all clients
+            await _broadcast_phase_update(session, measurement.phase)
             
             await _broadcast_to_devices(
                 all_device_ids,
@@ -779,3 +878,76 @@ async def handle_error(
         "error_device_id": device_id,
         "error_message": error_message,
     }
+
+
+async def broadcast_analysis_results(
+    session_id: str,
+    job_id: str,
+    results: dict[str, Any],
+) -> dict[str, Any]:
+    """
+    Broadcast analysis results to all session participants.
+    
+    This is called after the measurement service completes analysis.
+    It ensures all clients (not just the admin) receive the results.
+    
+    Args:
+        session_id: The measurement session ID
+        job_id: The job ID containing the analysis
+        results: The analysis results dict
+    
+    Returns:
+        Status dict
+    """
+    session = await get_session(session_id)
+    if session is None:
+        # Session might have been cleaned up, try to broadcast to stored device IDs
+        logger.warning(f"Session not found for results broadcast: {session_id}")
+        raise ValueError(f"Session not found: {session_id}")
+    
+    logger.info(f"Broadcasting analysis results for session {session_id}")
+    
+    # Notify all participants of the analysis results
+    all_device_ids = (
+        [s.device_id for s in session.speakers] +
+        [m.device_id for m in session.microphones]
+    )
+    
+    await _broadcast_to_devices(
+        all_device_ids,
+        "measurement.analysis_results",
+        {
+            "session_id": session_id,
+            "job_id": job_id,
+            "results": results,
+        },
+        session_id=session_id,
+    )
+    
+    logger.info(f"Analysis results broadcast to {len(all_device_ids)} devices")
+    
+    return {
+        "session_id": session_id,
+        "status": "results_broadcast",
+        "devices_notified": len(all_device_ids),
+    }
+
+
+async def get_session_device_ids(session_id: str) -> list[str]:
+    """
+    Get all device IDs for a session (for external broadcast).
+    
+    Args:
+        session_id: The measurement session ID
+        
+    Returns:
+        List of device IDs in the session
+    """
+    session = await get_session(session_id)
+    if session is None:
+        return []
+    
+    return (
+        [s.device_id for s in session.speakers] +
+        [m.device_id for m in session.microphones]
+    )

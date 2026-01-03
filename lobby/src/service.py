@@ -263,3 +263,99 @@ async def get_events(session: AsyncSession, *, lobby_id: str, after_id: int | No
     stmt = stmt.order_by(LobbyEvent.id.asc())
     result = await session.execute(stmt)
     return list(result.scalars().all())
+
+
+async def broadcast_step_update(
+    session: AsyncSession,
+    *,
+    lobby: Lobby,
+    admin_device_id: str,
+    step_index: int,
+) -> None:
+    """
+    Broadcast timeline step update to all lobby participants.
+    
+    This keeps all clients synchronized on the current measurement timeline step
+    (e.g., "construct wall", "furnish room", "place devices", etc.).
+    
+    Args:
+        session: Database session
+        lobby: The lobby instance
+        admin_device_id: Device ID of the admin making the change
+        step_index: The current timeline step index
+    """
+    _require_admin(lobby, admin_device_id)
+    
+    await _append_event(
+        session,
+        lobby.id,
+        "step_update",
+        {"admin_device_id": admin_device_id, "step_index": step_index},
+    )
+    
+    # Broadcast to all participants except the sender
+    participants = await list_participants(session, lobby.id)
+    device_ids = [
+        p.device_id
+        for p in participants
+        if p.status == ParticipantStatus.JOINED and p.device_id != admin_device_id
+    ]
+    
+    if device_ids:
+        await broadcast_to_devices(
+            device_ids,
+            "lobby.step_update",
+            {
+                "lobby_id": lobby.id,
+                "step_index": step_index,
+                "source_device_id": admin_device_id,
+            },
+        )
+
+
+async def broadcast_profile_update(
+    session: AsyncSession,
+    *,
+    lobby: Lobby,
+    admin_device_id: str,
+    profile_id: str,
+) -> None:
+    """
+    Broadcast measurement profile update to all lobby participants.
+    
+    This keeps all clients synchronized on the current measurement profile
+    (e.g., "smartphone" or "high_end").
+    
+    Args:
+        session: Database session
+        lobby: The lobby instance
+        admin_device_id: Device ID of the admin making the change
+        profile_id: The profile identifier (e.g., "smartphone", "high_end")
+    """
+    _require_admin(lobby, admin_device_id)
+    
+    await _append_event(
+        session,
+        lobby.id,
+        "profile_update",
+        {"admin_device_id": admin_device_id, "profile_id": profile_id},
+    )
+    
+    # Broadcast to all participants except the sender
+    participants = await list_participants(session, lobby.id)
+    device_ids = [
+        p.device_id
+        for p in participants
+        if p.status == ParticipantStatus.JOINED and p.device_id != admin_device_id
+    ]
+    
+    if device_ids:
+        await broadcast_to_devices(
+            device_ids,
+            "lobby.profile_update",
+            {
+                "lobby_id": lobby.id,
+                "profile_id": profile_id,
+                "source_device_id": admin_device_id,
+            },
+        )

@@ -400,10 +400,23 @@ ws.send(JSON.stringify({
 | `measurement.recording_started` | Lobby | Mic is recording |
 | `measurement.playback_complete` | Lobby | Speaker finished |
 | `measurement.recording_uploaded` | Lobby | Mic uploaded recording |
+| `measurement.broadcast_results` | Lobby | Broadcast analysis results to all clients |
 | `measurement.create_job` | Measurement | Create analysis job |
 | `measurement.get_job` | Measurement | Get job data |
 | `analysis.run` | Measurement | Run acoustic analysis |
 | `simulation.run` | Simulation | Run room simulation |
+
+### Broadcast Events (Server → All Clients)
+
+These events are pushed to all participants in a measurement session:
+
+| Event | Service | Description |
+|-------|---------|-------------|
+| `measurement.phase_update` | Lobby | Current measurement phase/step changed |
+| `measurement.analysis_results` | Lobby | Analysis results for all clients |
+| `measurement.session_complete` | Lobby | Measurement session finished |
+| `measurement.session_cancelled` | Lobby | Session was cancelled |
+| `measurement.error` | Lobby | Error occurred during measurement |
 
 ---
 
